@@ -44,12 +44,17 @@ escrito en Rust y **basado profundamente en [ArrowVortex](https://github.com/uvc
   deshacer/rehacer, selección por región (Tab, mouse, Ctrl+A) y por tipo de nota
   (pasos, saltos, minas, holds, rolls, fakes, cuantización, jugador), copiar/cortar/pegar,
   borrar y espejo horizontal/vertical/completo.
+- **Transformar notas** (*Editar*): convertir notas ↔ minas, fakes y lifts, holds → pasos o
+  minas y holds ↔ rolls (tecla º, bajo Esc); escalar 2:1, 3:2, 4:3, 1:2, 2:3 y 3:4; cambiar de
+  lado (en double, del pad de P1 al de P2) y, en co-op, pasar la selección al jugador
+  siguiente (`/`). Los tokens de StepF2 se actualizan.
 - **Canción y charts**: simfile nuevo desde un audio, nuevo chart (Shift+N), borrar chart
   (Ctrl+Supr), propiedades del chart (Shift+C) y de la canción (Shift+P): textos, archivos,
   Display BPM, preview y los demás tags.
 - **Editor de tempo** (Shift+T): offset (±1/±10 ms), BPM inicial, mover el primer beat
   (±½ / ±1 beat), y BPM, stops, delays, warps y scrolls en el cursor,
-  lista de todos los segmentos, y crear o descartar el timing propio de un chart.
+  lista de todos los segmentos, crear o descartar el timing propio de un chart, e insertar o
+  borrar beats en el cursor (en este chart o en todos).
 - **Guardado seguro**: se conservan los tags desconocidos (`#QUESTMODS`, `#HEARTS`, …) y
   el texto exacto de los charts que no editaste. La primera vez que se sobrescribe un
   archivo se crea un `.bak` con el original.
@@ -94,12 +99,13 @@ ventana.
 | Ctrl + / Ctrl − | Tamaño de las notas |
 | 1..9, 0 | Nota en la columna (mantener + mover = hold) |
 | Shift+1..0 / Alt+1..0 | Roll / mina |
-| / | Jugador activo (co-op) |
+| / | Co-op: jugador activo o, con selección, pasarla al jugador siguiente |
 | Ctrl+Z / Ctrl+Y | Deshacer / rehacer |
 | Tab / arrastrar / Shift+click | Seleccionar región |
 | Ctrl+A / Esc | Seleccionar todo / quitar selección |
 | Ctrl+C / Ctrl+X / Ctrl+V / Supr | Copiar / cortar / pegar / borrar |
 | Y / T / G | Espejo horizontal / vertical / completo |
+| º (bajo Esc) | Holds ↔ rolls en la selección |
 | Shift+T | Editor de tempo y sincronía |
 | Shift+P / Shift+C | Propiedades de la canción / del chart |
 | Shift+N / Ctrl+Supr | Nuevo chart / borrar chart |

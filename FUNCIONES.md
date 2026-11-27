@@ -5,7 +5,7 @@ Estado: ✅ hecho · 🟡 parcial · ❌ pendiente
 La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowVortex 1.0.1
 (`D:\ArrowVortex-1.0.1-Windows`). Al final están los extras propios y las ideas nuevas.
 
-**Resumen de paridad con ArrowVortex:** 63 ✅ · 10 🟡 · 38 ❌ (111 funciones)
+**Resumen de paridad con ArrowVortex:** 70 ✅ · 9 🟡 · 32 ❌ (111 funciones)
 
 ---
 
@@ -115,14 +115,14 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Seleccionar por cuantización (4th … 192nd) | ✅ | |
 | Copiar / cortar / pegar / borrar | ✅ | Pega en el cursor reemplazando la región; sirve entre ventanas |
 | Copia basada en tiempo (time-based copy) | ❌ | |
-| Notas → minas / fakes / lifts, y al revés | ❌ | |
-| Holds → pasos / minas | ❌ | |
-| Holds ↔ rolls | ❌ | |
-| Cambiar el jugador de las notas (routine) | 🟡 | Sólo se elige el jugador de las notas nuevas (`/`) |
+| Notas → minas / fakes / lifts, y al revés | ✅ | *Editar → Convertir*; los tokens de StepF2 se actualizan y de fake a nota se conserva el hold |
+| Holds → pasos / minas | ✅ | *Editar → Convertir* |
+| Holds ↔ rolls | ✅ | Tecla º (bajo Esc, la misma que en ArrowVortex) |
+| Cambiar el jugador de las notas (routine) | ✅ | `/` con selección pasa las notas al jugador siguiente; sin selección, cambia el de las notas nuevas |
 | Espejo horizontal / vertical / completo | ✅ | Y / T / G, con los mapeos de `styles.txt` |
-| Escalar notas (2:1, 3:2, 4:3, 1:2, 2:3, 3:4) | ❌ | |
-| Insertar / borrar beats en el cursor | ❌ | |
-| Mover filas al cursor (destructivo / no destructivo) | ❌ | |
+| Cambiar de lado (mitad izquierda ↔ derecha) | ✅ | De la versión actual de ArrowVortex; en double pasa las notas de un pad al otro sin espejarlas |
+| Escalar notas (2:1, 3:2, 4:3, 1:2, 2:3, 3:4) | ✅ | *Editar → Escalar*, respecto a la primera nota; lo que sale de la región se elimina |
+| Insertar / borrar beats en el cursor | ✅ | Editor de tempo (Shift+T), en este chart o en todos; mueve notas y cambios de tempo |
 | Exportar notas como tabla Lua | ❌ | |
 | Copiar información de las notas al portapapeles | ❌ | |
 
@@ -139,7 +139,7 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Adjust Tempo: insertar y editar BPM, stop, delay, warp | ✅ | Editor de tempo (Shift+T), con lista de segmentos |
 | Adjust Tempo SM5: time sig., tickcount, combo, speed, scroll, fake, label | 🟡 | Sólo scroll |
 | Insertar un cambio de BPM que encierre la selección (Ctrl+B) | ❌ | |
-| Visual sync (arrastrar beats al audio; ancla en cursor o receptor) | ❌ | |
+| Visual sync (arrastrar beats al audio; ancla en cursor o receptor) | ❌ | En ArrowVortex, B / Alt+B (no destructivo / destructivo) |
 | Convertir la selección en stop / stutter | ❌ | |
 | Seleccionar segmentos de tempo por tipo | ❌ | |
 | Copiar / pegar datos de tempo | ❌ | |

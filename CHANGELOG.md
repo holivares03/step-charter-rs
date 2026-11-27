@@ -6,6 +6,17 @@ Todos los cambios importantes de Step Charter. El formato sigue
 
 ## [Sin publicar]
 
+### Agregado
+- *Editar → Convertir*: notas ↔ minas, fakes y lifts, holds → pasos o minas y holds ↔ rolls
+  (tecla º, bajo Esc). Los tokens de StepF2 se actualizan; de fake a nota se conserva el hold.
+- *Editar → Escalar*: 2:1, 3:2 y 4:3 (expandir) y 1:2, 2:3 y 3:4 (comprimir), respecto a la
+  primera nota de la selección.
+- *Editar → Cambiar de lado*: pasa las notas a la otra mitad del pad sin espejarlas (en double,
+  del pad de P1 al de P2).
+- En co-op, `/` con notas seleccionadas las pasa al jugador siguiente.
+- Editor de tempo: insertar o borrar beats en el cursor, en este chart o en todos, moviendo
+  notas y cambios de tempo.
+
 ### Arreglado
 - El `.exe` trae el ícono de Step Charter (antes el Explorador mostraba el genérico de
   Windows) y el Administrador de tareas lo muestra como "Step Charter".

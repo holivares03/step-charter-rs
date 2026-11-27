@@ -159,17 +159,71 @@ pub fn normalize(notes: &mut Vec<Note>) {
 }
 
 fn to_tap(n: &mut Note) {
-    n.kind = NoteKind::Tap;
-    n.end_row = n.row;
-    n.tail_token = None;
+    let fake = n.fake;
+    retype(n, NoteKind::Tap, fake);
+}
+
+/// Cambia el tipo de una nota (y si es fake). Si deja de ser hold/roll, pierde la cola. El
+/// token de StepF2, si tiene, se reescribe con el tipo nuevo conservando el resto:
+/// compacto `{110}` (tipo, jugador, atributo) o con barras `{1|n|0|0}` (tipo|attr|fake|x).
+fn retype(n: &mut Note, kind: NoteKind, fake: bool) {
+    n.kind = kind;
+    n.fake = fake;
+    if !n.is_long() {
+        n.end_row = n.row;
+        n.tail_token = None;
+    }
+    let ty = match kind {
+        NoteKind::Hold => '2',
+        NoteKind::Roll => '4',
+        NoteKind::Mine => 'M',
+        NoteKind::Lift => 'L',
+        NoteKind::AutoKeysound => 'K',
+        NoteKind::Special(c) => c,
+        NoteKind::Tap => '1',
+    };
+    let set_fake = |t: &mut String| {
+        let mut parts: Vec<String> = t.trim_start_matches('{').trim_end_matches('}').split('|').map(String::from).collect();
+        if parts.len() >= 3 {
+            parts[2] = if fake { "1" } else { "0" }.to_string();
+            *t = format!("{{{}}}", parts.join("|"));
+        }
+    };
     if let Some(t) = n.token.as_mut() {
-        // Token compacto de StepF2: cambiar el tipo a tap conservando el resto.
-        if t.starts_with('{') && !t.contains('|') && t.len() >= 3 {
+        if t.starts_with('{') && t.contains('|') {
+            // Con barras: el tipo va en la primera parte y fake en la tercera.
+            let rest = t.splitn(2, '|').nth(1).unwrap_or("").to_string();
+            *t = format!("{{{}|{}", ty, rest);
+            set_fake(t);
+            if let Some(tt) = n.tail_token.as_mut() {
+                set_fake(tt);
+            }
+        } else if t.starts_with('{') && t.chars().count() >= 3 {
+            // Compacto: sin campo fake; un tap fake usa la letra `F` como en StepMania.
             let mut chars: Vec<char> = t.chars().collect();
-            chars[1] = '1';
+            chars[1] = if kind == NoteKind::Tap && fake { 'F' } else { ty };
             *t = chars.into_iter().collect();
+        } else {
+            // Carácter simple con sufijo (keysound/attack): se regenera desde el tipo.
+            n.token = None;
         }
     }
+}
+
+/// Vuelve a poner las notas `moved` en `notes`, reemplazando las que ocupen la misma celda
+/// (fila, columna y bloque), y recorta los holds que queden solapados.
+fn merge_moved(notes: &mut Vec<Note>, moved: Vec<Note>) {
+    let cells: HashSet<(i32, u8, u8)> = moved.iter().map(|m| (m.row, m.col, m.block)).collect();
+    notes.retain(|n| !cells.contains(&(n.row, n.col, n.block)));
+    notes.extend(moved);
+    normalize(notes);
+}
+
+/// Separa las notas seleccionadas (devueltas) de las demás (que quedan en `notes`).
+fn take_selected(notes: &mut Vec<Note>, sel: &Selection) -> Vec<Note> {
+    let (picked, rest): (Vec<Note>, Vec<Note>) = notes.drain(..).partition(|n| sel.contains(n));
+    *notes = rest;
+    picked
 }
 
 // ---------------------------------------------------------------------------
@@ -390,25 +444,292 @@ pub fn set_note_player(n: &mut Note, player: u8, separated: bool, use_tokens: bo
 /// Aplica la permutación de columnas `perm` a las notas seleccionadas. Las notas no
 /// seleccionadas que queden debajo se reemplazan. Devuelve cuántas se movieron.
 pub fn mirror(notes: &mut Vec<Note>, sel: &Selection, perm: &[usize]) -> usize {
-    let mut moved = Vec::new();
-    let mut rest = Vec::new();
-    for n in notes.drain(..) {
-        if sel.contains(&n) {
-            let mut m = n;
-            if let Some(&c) = perm.get(m.col as usize) {
-                m.col = c as u8;
-            }
-            moved.push(m);
-        } else {
-            rest.push(n);
+    let mut moved = take_selected(notes, sel);
+    for m in moved.iter_mut() {
+        if let Some(&c) = perm.get(m.col as usize) {
+            m.col = c as u8;
         }
     }
     let count = moved.len();
-    rest.retain(|n| !moved.iter().any(|m| m.row == n.row && m.col == n.col && m.block == n.block));
-    rest.extend(moved);
-    *notes = rest;
-    normalize(notes);
+    merge_moved(notes, moved);
     count
+}
+
+/// Permutación "cambiar de lado": la mitad izquierda de las columnas pasa a la derecha y al
+/// revés (en double, del pad de P1 al de P2). Con un número impar, la del medio no se mueve.
+pub fn side_perm(num_cols: usize) -> Vec<usize> {
+    let half = num_cols / 2;
+    (0..num_cols)
+        .map(|c| {
+            if num_cols % 2 == 0 {
+                (c + half) % num_cols
+            } else if c < half {
+                c + half + 1
+            } else if c > half {
+                c - half - 1
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Convertir tipos de nota (Edit → Convert de ArrowVortex)
+// ---------------------------------------------------------------------------
+
+/// Tipos que se convierten entre sí.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteType {
+    /// Pasos: taps, holds y rolls que no son fakes.
+    Step,
+    Mine,
+    Fake,
+    Lift,
+}
+
+impl NoteType {
+    fn of(n: &Note) -> Option<NoteType> {
+        if n.fake {
+            return Some(NoteType::Fake);
+        }
+        match n.kind {
+            NoteKind::Tap | NoteKind::Hold | NoteKind::Roll => Some(NoteType::Step),
+            NoteKind::Mine => Some(NoteType::Mine),
+            NoteKind::Lift => Some(NoteType::Lift),
+            NoteKind::AutoKeysound | NoteKind::Special(_) => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NoteType::Step => "notas",
+            NoteType::Mine => "minas",
+            NoteType::Fake => "fakes",
+            NoteType::Lift => "lifts",
+        }
+    }
+}
+
+/// Conversión sobre las notas seleccionadas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Convert {
+    /// De un tipo a otro: los holds y rolls pasan a ser de una fila, salvo de fake a nota,
+    /// que conserva el largo.
+    Type(NoteType, NoteType),
+    /// Holds y rolls a pasos de una fila.
+    HoldsToSteps,
+    HoldsToMines,
+    /// Alterna cada hold ↔ roll.
+    HoldsRolls,
+}
+
+impl Convert {
+    /// Las conversiones de tipo que ofrece ArrowVortex, en el orden de su menú.
+    pub const TYPES: [(NoteType, NoteType); 8] = [
+        (NoteType::Step, NoteType::Mine),
+        (NoteType::Step, NoteType::Fake),
+        (NoteType::Step, NoteType::Lift),
+        (NoteType::Mine, NoteType::Step),
+        (NoteType::Mine, NoteType::Fake),
+        (NoteType::Mine, NoteType::Lift),
+        (NoteType::Fake, NoteType::Step),
+        (NoteType::Lift, NoteType::Step),
+    ];
+
+    /// Texto para menús y mensajes ("Notas → minas").
+    pub fn label(self) -> String {
+        let cap = |s: &str| {
+            let mut c = s.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        };
+        match self {
+            Convert::Type(a, b) => format!("{} → {}", cap(a.name()), b.name()),
+            Convert::HoldsToSteps => "Holds → pasos".into(),
+            Convert::HoldsToMines => "Holds → minas".into(),
+            Convert::HoldsRolls => "Holds ↔ rolls".into(),
+        }
+    }
+}
+
+/// Aplica una conversión a las notas seleccionadas. Devuelve cuántas cambiaron.
+pub fn convert(notes: &mut Vec<Note>, sel: &Selection, conv: Convert) -> usize {
+    let mut count = 0;
+    for n in notes.iter_mut().filter(|n| sel.contains(n)) {
+        let changed = match conv {
+            Convert::Type(from, to) if from != to && NoteType::of(n) == Some(from) => {
+                match to {
+                    NoteType::Step => {
+                        // De fake a nota se conserva el hold; de mina o lift sale un tap.
+                        let kind = if from == NoteType::Fake && n.is_long() { n.kind } else { NoteKind::Tap };
+                        retype(n, kind, false);
+                    }
+                    NoteType::Mine => retype(n, NoteKind::Mine, false),
+                    NoteType::Lift => retype(n, NoteKind::Lift, false),
+                    NoteType::Fake => retype(n, NoteKind::Tap, true),
+                }
+                true
+            }
+            Convert::HoldsToSteps if n.is_long() => {
+                let fake = n.fake;
+                retype(n, NoteKind::Tap, fake);
+                true
+            }
+            Convert::HoldsToMines if n.is_long() => {
+                retype(n, NoteKind::Mine, false);
+                true
+            }
+            Convert::HoldsRolls if n.is_long() => {
+                let kind = if n.kind == NoteKind::Roll { NoteKind::Hold } else { NoteKind::Roll };
+                let fake = n.fake;
+                retype(n, kind, fake);
+                true
+            }
+            _ => false,
+        };
+        count += changed as usize;
+    }
+    count
+}
+
+/// Para una selección filtrada por el tipo de origen de una conversión, el filtro del tipo de
+/// destino (así la selección sigue mostrando las notas convertidas).
+pub fn filter_after_convert(f: &NoteFilter, conv: Convert) -> Option<NoteFilter> {
+    let of_type = |t: NoteType| match t {
+        NoteType::Step => NoteFilter::Steps,
+        NoteType::Mine => NoteFilter::Mines,
+        NoteType::Fake => NoteFilter::Fakes,
+        NoteType::Lift => NoteFilter::Lifts,
+    };
+    match (conv, f) {
+        (Convert::Type(from, to), f) if *f == of_type(from) => Some(of_type(to)),
+        (Convert::HoldsToSteps, NoteFilter::Holds | NoteFilter::Rolls) => Some(NoteFilter::Steps),
+        (Convert::HoldsToMines, NoteFilter::Holds | NoteFilter::Rolls) => Some(NoteFilter::Mines),
+        (Convert::HoldsRolls, NoteFilter::Holds) => Some(NoteFilter::Rolls),
+        (Convert::HoldsRolls, NoteFilter::Rolls) => Some(NoteFilter::Holds),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Jugadores y lados
+// ---------------------------------------------------------------------------
+
+/// Pasa las notas seleccionadas al jugador siguiente (P1 → P2 → … → P1), como la tecla `/`
+/// de ArrowVortex. Devuelve (notas cambiadas, jugador nuevo si todas iban al mismo).
+pub fn cycle_players(notes: &mut Vec<Note>, sel: &Selection, players: u8, separated: bool, use_tokens: bool) -> (usize, Option<u8>) {
+    let players = players.max(1);
+    let mut moved = take_selected(notes, sel);
+    let mut target: Option<Option<u8>> = None;
+    for n in moved.iter_mut() {
+        let next = if n.player == 0 || n.player >= players { 1 } else { n.player + 1 };
+        set_note_player(n, next, separated, use_tokens);
+        target = match target {
+            None => Some(Some(next)),
+            Some(Some(p)) if p == next => Some(Some(p)),
+            _ => Some(None),
+        };
+    }
+    let count = moved.len();
+    merge_moved(notes, moved);
+    (count, target.flatten())
+}
+
+// ---------------------------------------------------------------------------
+// Escalar (Edit → Scale de ArrowVortex)
+// ---------------------------------------------------------------------------
+
+/// Escala la distancia de las notas seleccionadas a la primera de ellas por `num/den`
+/// (2:1 expande al doble, 1:2 comprime a la mitad). Las que quedan fuera de la región se
+/// eliminan, como en ArrowVortex. Devuelve (notas escaladas, si se recortó alguna).
+pub fn scale(notes: &mut Vec<Note>, sel: &Selection, num: i32, den: i32) -> (usize, bool) {
+    let mut moved = take_selected(notes, sel);
+    let Some(top) = moved.iter().map(|n| n.row).min() else {
+        return (0, false);
+    };
+    let den = den.max(1);
+    for n in moved.iter_mut() {
+        n.row = top + (n.row - top) * num / den;
+        n.end_row = top + (n.end_row - top) * num / den;
+        if n.is_long() && n.end_row <= n.row {
+            to_tap(n);
+        }
+    }
+    let before = moved.len();
+    moved.retain(|n| n.row <= sel.r1);
+    let truncated = moved.len() < before;
+    let count = moved.len();
+    merge_moved(notes, moved);
+    (count, truncated)
+}
+
+// ---------------------------------------------------------------------------
+// Insertar y borrar beats (Adjust Tempo → Insert/Delete beats de ArrowVortex)
+// ---------------------------------------------------------------------------
+
+/// Nueva fila de algo que estaba en `r` al insertar (`n > 0`) o borrar (`n < 0`) filas en `at`.
+fn shift_row(r: i32, at: i32, n: i32) -> i32 {
+    if n >= 0 {
+        if r >= at {
+            r + n
+        } else {
+            r
+        }
+    } else if r >= at - n {
+        r + n
+    } else if r >= at {
+        at
+    } else {
+        r
+    }
+}
+
+/// Inserta (`n > 0`) o borra (`n < 0`) filas en `at`. Las notas desde `at` se desplazan; al
+/// borrar, las que empiezan en la zona borrada se eliminan y los holds que la atraviesan se
+/// acortan. Devuelve cuántas notas se eliminaron.
+pub fn insert_rows_notes(notes: &mut Vec<Note>, at: i32, n: i32) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let before = notes.len();
+    if n < 0 {
+        notes.retain(|x| x.row < at || x.row >= at - n);
+    }
+    let removed = before - notes.len();
+    for x in notes.iter_mut() {
+        x.row = shift_row(x.row, at, n);
+        x.end_row = shift_row(x.end_row, at, n);
+        if x.is_long() && x.end_row <= x.row {
+            to_tap(x);
+        }
+    }
+    normalize(notes);
+    removed
+}
+
+/// Lo mismo para los segmentos de timing. Los de la fila 0 (BPM inicial, etc.) no se mueven
+/// ni se borran, como en ArrowVortex.
+pub fn insert_rows_timing(td: &mut TimingData, at: i32, n: i32) {
+    if n == 0 {
+        return;
+    }
+    macro_rules! shift {
+        ($($list:ident),*) => {$(
+            if n < 0 {
+                td.$list.retain(|s| s.row == 0 || s.row < at || s.row >= at - n);
+            }
+            for s in td.$list.iter_mut() {
+                if s.row > 0 {
+                    s.row = shift_row(s.row, at, n);
+                }
+            }
+        )*};
+    }
+    let first_bpm = td.bpms.first().cloned();
+    shift!(bpms, stops, delays, warps, time_sigs, tick_counts, combos, speeds, scrolls, fakes, labels);
+    if td.bpms.is_empty() {
+        td.bpms.extend(first_bpm);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +981,188 @@ mod tests {
         assert_eq!(n.block, 0);
         set_note_player(&mut n, 0, false, false);
         assert_eq!(n.token.as_deref(), Some("{100}"));
+    }
+
+    fn kinds(notes: &[Note]) -> Vec<(i32, i32, u8, NoteKind, bool)> {
+        notes.iter().map(|n| (n.row, n.end_row, n.col, n.kind, n.fake)).collect()
+    }
+
+    #[test]
+    fn convert_note_types() {
+        let mut roll = hold(96, 144, 3);
+        roll.kind = NoteKind::Roll;
+        let all = Selection::rows(0, 500, 5);
+        let mut notes = vec![tap(0, 0), hold(48, 96, 1), roll.clone(), Note::new(200, 2, NoteKind::Mine)];
+        // Notas → minas: taps, holds y rolls pasan a minas de una fila; la mina no cambia.
+        assert_eq!(convert(&mut notes, &all, Convert::Type(NoteType::Step, NoteType::Mine)), 3);
+        assert!(notes.iter().all(|n| n.kind == NoteKind::Mine && n.end_row == n.row));
+        // Minas → fakes: taps fake (se guardan como `F`).
+        assert_eq!(convert(&mut notes, &all, Convert::Type(NoteType::Mine, NoteType::Fake)), 4);
+        assert!(notes.iter().all(|n| n.kind == NoteKind::Tap && n.fake));
+        assert_eq!(convert(&mut notes, &all, Convert::Type(NoteType::Fake, NoteType::Step)), 4);
+        assert!(notes.iter().all(|n| n.kind == NoteKind::Tap && !n.fake));
+        // Sólo dentro de la selección.
+        let mut notes = vec![tap(0, 0), tap(300, 0)];
+        assert_eq!(convert(&mut notes, &Selection::rows(0, 100, 5), Convert::Type(NoteType::Step, NoteType::Lift)), 1);
+        assert_eq!(kinds(&notes), vec![(0, 0, 0, NoteKind::Lift, false), (300, 300, 0, NoteKind::Tap, false)]);
+    }
+
+    #[test]
+    fn convert_rewrites_stepf2_tokens() {
+        let all = Selection::rows(0, 500, 5);
+        // Compacto: cambia la letra del tipo y conserva jugador y atributo.
+        let mut t = tap(0, 0);
+        t.token = Some("{120}".into());
+        let mut notes = vec![t];
+        convert(&mut notes, &all, Convert::Type(NoteType::Step, NoteType::Mine));
+        assert_eq!(notes[0].token.as_deref(), Some("{M20}"));
+        convert(&mut notes, &all, Convert::Type(NoteType::Mine, NoteType::Fake));
+        assert_eq!(notes[0].token.as_deref(), Some("{F20}"));
+        // Con barras: un hold fake pasa a hold normal y la cola también deja de ser fake.
+        let mut h = hold(48, 96, 2);
+        h.fake = true;
+        h.token = Some("{2|n|1|0}".into());
+        h.tail_token = Some("{3|n|1|0}".into());
+        let mut notes = vec![h];
+        convert(&mut notes, &all, Convert::Type(NoteType::Fake, NoteType::Step));
+        assert_eq!(kinds(&notes), vec![(48, 96, 2, NoteKind::Hold, false)]);
+        assert_eq!(notes[0].token.as_deref(), Some("{2|n|0|0}"));
+        assert_eq!(notes[0].tail_token.as_deref(), Some("{3|n|0|0}"));
+        // Hold ↔ roll en un token compacto.
+        let mut h = hold(0, 48, 1);
+        h.token = Some("{210}".into());
+        h.tail_token = Some("{310}".into());
+        let mut notes = vec![h];
+        convert(&mut notes, &all, Convert::HoldsRolls);
+        assert_eq!(notes[0].kind, NoteKind::Roll);
+        assert_eq!(notes[0].token.as_deref(), Some("{410}"));
+        assert_eq!(notes[0].tail_token.as_deref(), Some("{310}"));
+    }
+
+    /// Lo convertido se guarda y se vuelve a leer igual (tokens compactos, con barras y simples).
+    #[test]
+    fn converted_notes_survive_save_and_load() {
+        use crate::simfile::notes::{parse_notes, write_notes};
+        // Tap de P1 con token, hold fake con barras (filas 0..96), tap simple y hold `{2m8}`.
+        let text = "{110}0{2|n|1|0}10\n0000{2m8}\n00{3|n|1|0}00\n00003\n";
+        let (mut notes, cols, blocks, _) = parse_notes(text, 5, false);
+        assert_eq!(notes.iter().filter(|n| n.is_long()).count(), 2);
+        let all = Selection::rows(0, 1000, 5);
+        convert(&mut notes, &all, Convert::Type(NoteType::Step, NoteType::Fake));
+        convert(&mut notes, &all, Convert::Type(NoteType::Fake, NoteType::Mine));
+        let saved = write_notes(&notes, cols, blocks);
+        let (back, _, _, _) = parse_notes(&saved, cols, false);
+        assert_eq!(kinds(&back), kinds(&notes), "guardado:\n{}", saved);
+        assert!(back.iter().all(|n| n.kind == NoteKind::Mine && !n.fake));
+        assert_eq!(back.iter().map(|n| n.player).collect::<Vec<_>>(), notes.iter().map(|n| n.player).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn convert_holds() {
+        let all = Selection::rows(0, 500, 5);
+        let mut roll = hold(96, 144, 3);
+        roll.kind = NoteKind::Roll;
+        let mut notes = vec![tap(0, 0), hold(48, 96, 1), roll];
+        assert_eq!(convert(&mut notes, &all, Convert::HoldsRolls), 2);
+        assert_eq!(notes[1].kind, NoteKind::Roll);
+        assert_eq!(notes[2].kind, NoteKind::Hold);
+        assert_eq!(convert(&mut notes, &all.clone().with_filter(NoteFilter::Rolls), Convert::HoldsToMines), 1);
+        assert_eq!(kinds(&notes)[1], (48, 48, 1, NoteKind::Mine, false));
+        assert_eq!(convert(&mut notes, &all, Convert::HoldsToSteps), 1);
+        assert_eq!(kinds(&notes)[2], (96, 96, 3, NoteKind::Tap, false));
+        assert_eq!(convert(&mut notes, &all, Convert::HoldsToSteps), 0);
+
+        // La selección por tipo sigue a las notas convertidas.
+        let mines_to_steps = Convert::Type(NoteType::Mine, NoteType::Step);
+        assert_eq!(filter_after_convert(&NoteFilter::Mines, mines_to_steps), Some(NoteFilter::Steps));
+        assert_eq!(filter_after_convert(&NoteFilter::Holds, Convert::HoldsRolls), Some(NoteFilter::Rolls));
+        assert_eq!(filter_after_convert(&NoteFilter::Quant(4), mines_to_steps), None);
+    }
+
+    #[test]
+    fn players_cycle_and_side() {
+        let mut a = tap(0, 0);
+        a.player = 1;
+        a.token = Some("{110}".into());
+        let mut b = tap(48, 1);
+        b.player = 2;
+        b.block = 1;
+        // Otra nota de P2 en la celda a la que llega `a` (bloques separados): se reemplaza.
+        let mut c = tap(0, 0);
+        c.player = 2;
+        c.block = 1;
+        let mut notes = vec![a, b, c];
+        let sel = Selection::rows(0, 48, 5).with_filter(NoteFilter::Steps);
+        let sel = Selection { r1: 0, filter: Some(NoteFilter::Player(1)), ..sel };
+        assert_eq!(cycle_players(&mut notes, &sel, 2, true, true), (1, Some(2)));
+        assert_eq!(notes.len(), 2);
+        assert_eq!((notes[0].player, notes[0].block, notes[0].token.as_deref()), (2, 1, Some("{120}")));
+        // P2 → P1 al dar la vuelta.
+        let (n, to) = cycle_players(&mut notes, &Selection::rows(48, 48, 5), 2, true, true);
+        assert_eq!((n, to, notes[1].player, notes[1].block), (1, Some(1), 1, 0));
+
+        assert_eq!(side_perm(10), vec![5, 6, 7, 8, 9, 0, 1, 2, 3, 4]);
+        assert_eq!(side_perm(6), vec![3, 4, 5, 0, 1, 2]);
+        assert_eq!(side_perm(5), vec![3, 4, 2, 0, 1]);
+    }
+
+    #[test]
+    fn scale_notes() {
+        let region = Selection::rows(0, 95, 5);
+        // 2:1 expande al doble desde la primera nota; lo que sale de la región se pierde.
+        let mut notes = vec![tap(12, 0), hold(24, 36, 1), tap(60, 2), tap(200, 3)];
+        let (n, truncated) = scale(&mut notes, &region, 2, 1);
+        assert_eq!((n, truncated), (2, true));
+        assert_eq!(kinds(&notes), vec![(12, 12, 0, NoteKind::Tap, false), (36, 60, 1, NoteKind::Hold, false), (200, 200, 3, NoteKind::Tap, false)]);
+        // 1:2 comprime a la mitad.
+        let mut notes = vec![tap(0, 0), tap(24, 1), tap(48, 2)];
+        assert_eq!(scale(&mut notes, &region, 1, 2), (3, false));
+        assert_eq!(notes.iter().map(|n| n.row).collect::<Vec<_>>(), vec![0, 12, 24]);
+        // 3:4: de 16ths (12 filas) a 12 filas × 3/4 = 9.
+        let mut notes = vec![tap(0, 0), tap(12, 1), tap(24, 2)];
+        scale(&mut notes, &region, 3, 4);
+        assert_eq!(notes.iter().map(|n| n.row).collect::<Vec<_>>(), vec![0, 9, 18]);
+    }
+
+    #[test]
+    fn insert_and_delete_rows() {
+        // Insertar un beat (48 filas) en la fila 96.
+        let mut notes = vec![tap(0, 0), tap(96, 1), hold(48, 120, 2), tap(144, 3)];
+        assert_eq!(insert_rows_notes(&mut notes, 96, 48), 0);
+        assert_eq!(kinds(&notes), vec![
+            (0, 0, 0, NoteKind::Tap, false),
+            (48, 168, 2, NoteKind::Hold, false),
+            (144, 144, 1, NoteKind::Tap, false),
+            (192, 192, 3, NoteKind::Tap, false),
+        ]);
+        // Borrar ese beat lo deja como estaba.
+        assert_eq!(insert_rows_notes(&mut notes, 96, -48), 0);
+        assert_eq!(kinds(&notes), vec![
+            (0, 0, 0, NoteKind::Tap, false),
+            (48, 120, 2, NoteKind::Hold, false),
+            (96, 96, 1, NoteKind::Tap, false),
+            (144, 144, 3, NoteKind::Tap, false),
+        ]);
+        // Borrar un beat en 96: la nota de 96 se va, el hold termina donde empezaba la zona.
+        assert_eq!(insert_rows_notes(&mut notes, 96, -48), 1);
+        assert_eq!(kinds(&notes), vec![
+            (0, 0, 0, NoteKind::Tap, false),
+            (48, 96, 2, NoteKind::Hold, false),
+            (96, 96, 3, NoteKind::Tap, false),
+        ]);
+
+        let mut td = TimingData {
+            bpms: vec![BpmSeg { row: 0, bpm: 120.0 }, BpmSeg { row: 192, bpm: 150.0 }],
+            stops: vec![StopSeg { row: 0, seconds: 0.1 }, StopSeg { row: 100, seconds: 0.5 }],
+            ..Default::default()
+        };
+        insert_rows_timing(&mut td, 0, 48);
+        assert_eq!(td.bpms.iter().map(|s| s.row).collect::<Vec<_>>(), vec![0, 240]);
+        assert_eq!(td.stops.iter().map(|s| s.row).collect::<Vec<_>>(), vec![0, 148]);
+        insert_rows_timing(&mut td, 96, -96);
+        // El stop de 148 cae en la zona borrada (96..192); el BPM de 240 pasa a 144.
+        assert_eq!(td.bpms.iter().map(|s| s.row).collect::<Vec<_>>(), vec![0, 144]);
+        assert_eq!(td.stops.iter().map(|s| s.row).collect::<Vec<_>>(), vec![0]);
     }
 
     #[test]
