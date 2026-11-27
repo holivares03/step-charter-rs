@@ -1,0 +1,6 @@
+/target
+*.bak
+/pruebas
+# Noteskins de simuladores (XSanity, StepF2, StepMania…): no se distribuyen con la app;
+# cada usuario los importa desde su simulador (Vista → Noteskin → Importar).
+/noteskins/

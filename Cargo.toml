@@ -1,0 +1,29 @@
+[package]
+name = "step-charter"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Step Charter: editor de charts al estilo de ArrowVortex, escrito en Rust y enfocado en Pump It Up (.ssc)"
+
+[[bin]]
+name = "step-charter"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.31.1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.15.4"
+cpal = "0.15.3"
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "flac"] }
+serde = { version = "1", features = ["derive"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
