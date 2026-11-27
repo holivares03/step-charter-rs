@@ -1,0 +1,65 @@
+# Al subir un tag vX.Y.Z: comprueba que coincide con la versión de Cargo.toml, corre las
+# pruebas, compila el .exe y publica una Release con el .zip y las notas de CHANGELOG.md.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publicar release (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Comprobar que el tag coincide con Cargo.toml
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "El tag $GITHUB_REF_NAME no coincide con la versión $version de Cargo.toml"
+            exit 1
+          fi
+
+      - name: Pruebas
+        run: cargo test --locked
+
+      - name: Compilar
+        run: cargo build --release --locked
+
+      - name: Empaquetar
+        run: |
+          dir="step-charter-$GITHUB_REF_NAME-windows-x64"
+          mkdir "$dir"
+          cp target/release/step-charter.exe LICENSE README.md CHANGELOG.md "$dir/"
+          7z a "$dir.zip" "$dir" > /dev/null
+          echo "ZIP=$dir.zip" >> "$GITHUB_ENV"
+
+      - name: Notas de la versión (desde CHANGELOG.md)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md no tiene una sección para la versión $version"
+            exit 1
+          fi
+
+      - name: Publicar la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            --title "Step Charter $GITHUB_REF_NAME" \
+            --notes-file notes.md
