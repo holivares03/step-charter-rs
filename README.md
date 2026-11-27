@@ -126,8 +126,9 @@ leen sus noteskins. Esa carpeta no se sube al repositorio.
 
 ## Créditos
 
-- Inspirado en [ArrowVortex](https://github.com/kade-github/arrowvortex). Las texturas del
-  noteskin pump integrado vienen de ArrowVortex 1.0.1.
+- Inspirado en [ArrowVortex](https://github.com/uvcat7/ArrowVortex). Las texturas del
+  noteskin pump integrado vienen de ArrowVortex 1.0.1, y el ícono de la app es el de
+  ArrowVortex recoloreado en naranja (modificado para Step Charter en noviembre de 2026).
 - Los noteskins de XSanity, StepF2, StepMania y demás simuladores pertenecen a sus autores y
   no se distribuyen con Step Charter: cada usuario los importa desde su propia instalación.
 
