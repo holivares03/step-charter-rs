@@ -6,6 +6,11 @@ Todos los cambios importantes de Step Charter. El formato sigue
 
 ## [Sin publicar]
 
+## [0.2.0] - 2026-11-27
+
+Edición de notas: convertir tipos, escalar, cambiar de lado, cambiar de jugador e insertar o
+borrar beats.
+
 ### Agregado
 - *Editar → Convertir*: notas ↔ minas, fakes y lifts, holds → pasos o minas y holds ↔ rolls
   (tecla º, bajo Esc). Los tokens de StepF2 se actualizan; de fake a nota se conserva el hold.
@@ -53,5 +58,6 @@ Primera versión pública.
 - Reproducción sincronizada de mp3, ogg, wav y flac con volumen, velocidad y ticks.
 - Verificador de biblioteca (`--check`) y opciones de línea de comandos.
 
-[Sin publicar]: https://github.com/holivares03/step-charter-rs/compare/v0.1.0...HEAD
+[Sin publicar]: https://github.com/holivares03/step-charter-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/holivares03/step-charter-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/holivares03/step-charter-rs/releases/tag/v0.1.0
