@@ -52,9 +52,12 @@ escrito en Rust y **basado profundamente en [ArrowVortex](https://github.com/uvc
   (Ctrl+Supr), propiedades del chart (Shift+C) y de la canción (Shift+P): textos, archivos,
   Display BPM, preview y los demás tags.
 - **Editor de tempo** (Shift+T): offset (±1/±10 ms), BPM inicial, mover el primer beat
-  (±½ / ±1 beat), y BPM, stops, delays, warps y scrolls en el cursor,
+  (±½ / ±1 beat), BPM, stops, delays y warps en el cursor y los segmentos de StepMania 5
+  (compás, ticks, combo, speed, scroll, fakes y labels),
   lista de todos los segmentos, crear o descartar el timing propio de un chart, e insertar o
   borrar beats en el cursor (en este chart o en todos).
+- **Herramientas de tempo** (menú *Tempo*): cambio de BPM límite (Ctrl+B), convertir la
+  selección en stop o en stutter, y copiar y pegar cambios de tempo.
 - **Guardado seguro**: se conservan los tags desconocidos (`#QUESTMODS`, `#HEARTS`, …) y
   el texto exacto de los charts que no editaste. La primera vez que se sobrescribe un
   archivo se crea un `.bak` con el original.
@@ -107,6 +110,7 @@ ventana.
 | Y / T / G | Espejo horizontal / vertical / completo |
 | º (bajo Esc) | Holds ↔ rolls en la selección |
 | Shift+T | Editor de tempo y sincronía |
+| Ctrl+B | Cambio de BPM límite (en el cursor o encerrando la selección) |
 | Shift+P / Shift+C | Propiedades de la canción / del chart |
 | Shift+N / Ctrl+Supr | Nuevo chart / borrar chart |
 | F3 / F4 | Tick de beat / tick de notas |

@@ -5,7 +5,7 @@ Estado: ✅ hecho · 🟡 parcial · ❌ pendiente
 La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowVortex 1.0.1
 (`D:\ArrowVortex-1.0.1-Windows`). Al final están los extras propios y las ideas nuevas.
 
-**Resumen de paridad con ArrowVortex:** 70 ✅ · 9 🟡 · 32 ❌ (111 funciones)
+**Resumen de paridad con ArrowVortex:** 74 ✅ · 8 🟡 · 29 ❌ (111 funciones)
 
 ---
 
@@ -137,12 +137,12 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Detección automática de BPM y offset | ❌ | |
 | Doble / mitad de BPM, offset ± medio beat / ± un beat | ✅ | También offset ±1 / ±10 ms |
 | Adjust Tempo: insertar y editar BPM, stop, delay, warp | ✅ | Editor de tempo (Shift+T), con lista de segmentos |
-| Adjust Tempo SM5: time sig., tickcount, combo, speed, scroll, fake, label | 🟡 | Sólo scroll |
-| Insertar un cambio de BPM que encierre la selección (Ctrl+B) | ❌ | |
+| Adjust Tempo SM5: time sig., tickcount, combo, speed, scroll, fake, label | ✅ | Editor de tempo (Shift+T), sección *StepMania 5* |
+| Insertar un cambio de BPM que encierre la selección (Ctrl+B) | ✅ | Mismo BPM en los extremos de la selección (o en el cursor): no altera la sincronía |
 | Visual sync (arrastrar beats al audio; ancla en cursor o receptor) | ❌ | En ArrowVortex, B / Alt+B (no destructivo / destructivo) |
-| Convertir la selección en stop / stutter | ❌ | |
+| Convertir la selección en stop / stutter | ✅ | Menú *Tempo* y editor de tempo; el stutter no desfasa lo que sigue |
 | Seleccionar segmentos de tempo por tipo | ❌ | |
-| Copiar / pegar datos de tempo | ❌ | |
+| Copiar / pegar datos de tempo | ✅ | Menú *Tempo*: copiar los cambios de tempo de la selección y pegarlos en el cursor |
 | Tempo breakdown / stream breakdown (copiar al portapapeles) | ❌ | |
 
 ## 9. Audio
