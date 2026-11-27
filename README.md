@@ -145,6 +145,12 @@ leen sus noteskins. Esa carpeta no se sube al repositorio.
 La comparación completa con ArrowVortex (qué está hecho, parcial o pendiente), los extras
 propios y las ideas por añadir están en [FUNCIONES.md](FUNCIONES.md).
 
+## Cambios y cómo contribuir
+
+- [CHANGELOG.md](CHANGELOG.md): qué trae cada versión. Los `.exe` listos para usar están en
+  [Releases](https://github.com/holivares03/step-charter-rs/releases).
+- [CONTRIBUTING.md](CONTRIBUTING.md): ramas, commits, pull requests y cómo se publica una versión.
+
 ## Licencia
 
 Step Charter es software libre bajo la [GNU General Public License v3.0](LICENSE) o, a tu
