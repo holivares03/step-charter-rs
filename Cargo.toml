@@ -19,6 +19,10 @@ cpal = "0.15.3"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "flac"] }
 serde = { version = "1", features = ["derive"] }
 
+[build-dependencies]
+# Ícono y datos de versión del .exe en Windows (ver build.rs).
+winresource = "0.1.34"
+
 [profile.dev]
 opt-level = 1
 

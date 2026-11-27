@@ -6,6 +6,10 @@ Todos los cambios importantes de Step Charter. El formato sigue
 
 ## [Sin publicar]
 
+### Arreglado
+- El `.exe` trae el ícono de Step Charter (antes el Explorador mostraba el genérico de
+  Windows) y el Administrador de tareas lo muestra como "Step Charter".
+
 ## [0.1.0] - 2026-11-27
 
 Primera versión pública.
