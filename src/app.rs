@@ -9,7 +9,7 @@ use std::time::Instant;
 use egui::{Color32, Event, Key, Modifiers, RichText};
 
 use crate::audio::{self, AudioData, AudioPlayer, Waveform};
-use crate::edit::{self, Clip, NoteFilter, SegKind, Selection};
+use crate::edit::{self, Clip, Convert, NoteFilter, SegKind, Selection};
 use crate::minimap::{self, MinimapInput};
 use crate::notefield::{self, FieldInput, Layout, ViewSettings};
 use crate::noteskin::{self, ExternalSkin, Noteskin};
@@ -55,6 +55,8 @@ enum TempoAction {
     Jump(i32),
     CreateOwn,
     DropOwn,
+    /// Insertar (filas > 0) o borrar (filas < 0) en el cursor; `true` = en todos los charts.
+    InsertRows(i32, bool),
 }
 
 /// ¿Hay un campo de texto con el foco? (entonces los atajos no se procesan)
@@ -205,6 +207,9 @@ pub struct App {
     meta_changed: bool,
     /// Tiempo en que se detiene la reproducción del preview.
     preview_stop: Option<f64>,
+    /// Editor de tempo → insertar / borrar beats: cantidad y si se aplica a todos los charts.
+    insert_beats: f64,
+    insert_all_charts: bool,
 }
 
 fn setup_fonts(ctx: &egui::Context) {
@@ -235,6 +240,13 @@ fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> usize {
         _ => true,
     });
     n
+}
+
+/// "1 beat", "2 beats", "0.5 beats".
+fn fmt_beats(beats: f64) -> String {
+    let n = format!("{:.3}", beats);
+    let n = n.trim_end_matches('0').trim_end_matches('.');
+    format!("{} {}", n, if n == "1" { "beat" } else { "beats" })
 }
 
 fn fmt_time(t: f64) -> String {
@@ -339,6 +351,8 @@ impl App {
             meta_edit_active: false,
             meta_changed: false,
             preview_stop: None,
+            insert_beats: 1.0,
+            insert_all_charts: false,
         };
         if let Some(n) = start.noteskin.clone() {
             app.view.noteskin = n;
@@ -1195,10 +1209,6 @@ impl App {
 
     /// Espejo de la selección: horizontal (izq↔der), vertical (arriba↔abajo) o ambos.
     fn mirror_selection(&mut self, horizontal: bool, vertical: bool) {
-        let Some(sel) = self.need_selection() else { return };
-        if self.audio.is_playing() {
-            return;
-        }
         let Some(chart) = self.chart() else { return };
         let mut perm: Vec<usize> = (0..chart.num_cols).collect();
         for (on, h) in [(horizontal, true), (vertical, false)] {
@@ -1207,6 +1217,27 @@ impl App {
                 perm = perm.iter().map(|&c| p.get(c).copied().unwrap_or(c)).collect();
             }
         }
+        let what = match (horizontal, vertical) {
+            (true, true) => "Espejo completo",
+            (true, false) => "Espejo horizontal",
+            _ => "Espejo vertical",
+        };
+        self.permute_selection(perm, what);
+    }
+
+    /// Pasa las notas seleccionadas a la otra mitad del pad (en double, de P1 a P2) sin espejarlas.
+    fn switch_side(&mut self) {
+        let perm = edit::side_perm(self.num_cols());
+        self.permute_selection(perm, "Cambio de lado");
+    }
+
+    /// Mueve de columna las notas seleccionadas según `perm` (espejos y cambio de lado).
+    fn permute_selection(&mut self, perm: Vec<usize>, what: &str) {
+        let Some(sel) = self.need_selection() else { return };
+        if self.audio.is_playing() {
+            return;
+        }
+        let Some(chart) = self.chart() else { return };
         if edit::count_selected(&chart.notes, &sel) == 0 {
             self.msg("No hay notas en la selección.");
             return;
@@ -1214,18 +1245,137 @@ impl App {
         self.push_undo();
         let Some(chart) = self.chart_mut() else { return };
         let n = edit::mirror(&mut chart.notes, &sel, &perm);
-        // Las columnas de la región también se reflejan.
+        // Las columnas de la región también se mueven.
         let mapped: Vec<usize> = (sel.c0..=sel.c1).map(|c| perm.get(c).copied().unwrap_or(c)).collect();
         let c0 = mapped.iter().copied().min().unwrap_or(sel.c0);
         let c1 = mapped.iter().copied().max().unwrap_or(sel.c1);
         self.selection = Some(Selection { c0, c1, ..sel });
         self.notes_changed();
-        let what = match (horizontal, vertical) {
-            (true, true) => "completo",
-            (true, false) => "horizontal",
-            _ => "vertical",
+        self.msg(format!("{}: {} notas", what, n));
+    }
+
+    /// Convierte el tipo de las notas seleccionadas (*Editar → Convertir*).
+    fn convert_selection(&mut self, conv: Convert) {
+        let Some(sel) = self.need_selection() else { return };
+        if self.audio.is_playing() {
+            return;
+        }
+        let Some(chart) = self.chart() else { return };
+        // Se prueba sobre una copia para no dejar un paso de deshacer vacío.
+        let mut notes = chart.notes.clone();
+        let n = edit::convert(&mut notes, &sel, conv);
+        if n == 0 {
+            self.msg(format!("{}: no hay notas de ese tipo en la selección.", conv.label()));
+            return;
+        }
+        self.push_undo();
+        if let Some(chart) = self.chart_mut() {
+            chart.notes = notes;
+        }
+        // Si la selección filtraba por el tipo de origen, pasa a seguir a las notas convertidas.
+        if let Some(f) = sel.filter.as_ref().and_then(|f| edit::filter_after_convert(f, conv)) {
+            self.selection = Some(Selection { filter: Some(f), ..sel });
+        }
+        self.notes_changed();
+        self.msg(format!("{}: {} notas", conv.label(), n));
+    }
+
+    /// Escala la selección por `num/den` (*Editar → Escalar*).
+    fn scale_selection(&mut self, num: i32, den: i32) {
+        let Some(sel) = self.need_selection() else { return };
+        if self.audio.is_playing() {
+            return;
+        }
+        let Some(chart) = self.chart() else { return };
+        if edit::count_selected(&chart.notes, &sel) == 0 {
+            self.msg("No hay notas en la selección.");
+            return;
+        }
+        self.push_undo();
+        let Some(chart) = self.chart_mut() else { return };
+        let (n, truncated) = edit::scale(&mut chart.notes, &sel, num, den);
+        self.notes_changed();
+        let verb = if num > den { "Expandidas" } else { "Comprimidas" };
+        let cut = if truncated { "; las que salían de la región se eliminaron" } else { "" };
+        self.msg(format!("{} {}:{} {} notas{}", verb, num, den, n, cut));
+    }
+
+    /// Tecla `/`: con notas seleccionadas en un chart co-op, las pasa al jugador siguiente;
+    /// si no, cambia el jugador de las notas nuevas (como en ArrowVortex).
+    fn slash_key(&mut self) {
+        let Some(chart) = self.chart() else { return };
+        let players = chart.players.max(1);
+        if players <= 1 {
+            self.msg("Este chart tiene un solo jugador.");
+            return;
+        }
+        let sel = self.selection.clone().filter(|s| edit::count_selected(&chart.notes, s) > 0);
+        let Some(sel) = sel else {
+            self.current_player = self.current_player % players + 1;
+            let p = self.current_player;
+            self.msg(format!("Jugador para notas nuevas: P{}", p));
+            return;
         };
-        self.msg(format!("Espejo {}: {} notas", what, n));
+        if self.audio.is_playing() {
+            return;
+        }
+        let separated = chart.separated;
+        let (_, _, use_tokens) = self.new_note_target(chart);
+        self.push_undo();
+        let Some(chart) = self.chart_mut() else { return };
+        let (n, to) = edit::cycle_players(&mut chart.notes, &sel, players, separated, use_tokens);
+        // Una selección por jugador sigue a las notas al jugador nuevo.
+        if let (Some(NoteFilter::Player(_)), Some(p)) = (&sel.filter, to) {
+            self.selection = Some(Selection { filter: Some(NoteFilter::Player(p)), ..sel });
+        }
+        self.notes_changed();
+        self.msg(match to {
+            Some(p) => format!("{} notas pasadas a P{}", n, p),
+            None => format!("Jugador cambiado en {} notas", n),
+        });
+    }
+
+    /// Inserta (`rows > 0`) o borra (`rows < 0`) filas en el cursor, desplazando notas y
+    /// segmentos de timing: en este chart (y el timing que usa) o en todos los charts.
+    fn insert_rows(&mut self, rows: i32, all_charts: bool) {
+        if rows == 0 || self.audio.is_playing() {
+            return;
+        }
+        let at = self.cursor_row();
+        let Some(snap) = self.song_snapshot() else { return };
+        self.push_entry(snap);
+        self.tempo_edit_active = false;
+        let idx = self.chart_idx;
+        let Some(song) = self.song.as_mut() else { return };
+        let mut removed = 0;
+        if all_charts {
+            edit::insert_rows_timing(&mut song.timing, at, rows);
+            for c in song.charts.iter_mut() {
+                if let Some(td) = c.timing.as_mut() {
+                    edit::insert_rows_timing(td, at, rows);
+                }
+                removed += edit::insert_rows_notes(&mut c.notes, at, rows);
+            }
+        } else if idx < song.charts.len() {
+            match song.charts[idx].timing.as_mut() {
+                Some(td) => edit::insert_rows_timing(td, at, rows),
+                None => edit::insert_rows_timing(&mut song.timing, at, rows),
+            }
+            removed += edit::insert_rows_notes(&mut song.charts[idx].notes, at, rows);
+        }
+        self.selection = None;
+        self.sel_anchor = None;
+        self.notes_changed();
+        let beats = rows.abs() as f64 / ROWS_PER_BEAT as f64;
+        let what = match (rows > 0, rows.abs() == ROWS_PER_BEAT) {
+            (true, true) => "Insertado",
+            (true, false) => "Insertados",
+            (false, true) => "Borrado",
+            (false, false) => "Borrados",
+        };
+        let scope = if all_charts { "todos los charts" } else { "este chart" };
+        let gone = if removed > 0 { format!("; {} notas eliminadas", removed) } else { String::new() };
+        self.msg(format!("{} {} en el beat {:.3} ({}){}", what, fmt_beats(beats), row_to_beat(at), scope, gone));
     }
 
     // ------------------------------------------------------------------
@@ -1264,6 +1414,10 @@ impl App {
         for a in actions {
             match a {
                 TempoAction::Jump(r) => self.jump_to_row(r),
+                TempoAction::InsertRows(rows, all) => {
+                    self.insert_rows(rows, all);
+                    changed = true;
+                }
                 TempoAction::CreateOwn | TempoAction::DropOwn => {
                     let idx = self.chart_idx;
                     let Some(song) = self.song.as_ref() else { continue };
@@ -1308,6 +1462,7 @@ impl App {
         let mut actions: Vec<TempoAction> = Vec::new();
         let row = self.cursor_row();
         let screen = ctx.screen_rect();
+        let (mut ins_beats, mut ins_all) = (self.insert_beats, self.insert_all_charts);
         egui::Window::new("Tempo y sincronía")
             .open(&mut open)
             .default_pos(egui::pos2(screen.right() - 360.0, screen.top() + 60.0))
@@ -1431,6 +1586,46 @@ impl App {
                 ui.small("Si cambias un valor donde no hay segmento, se crea uno en el cursor.");
                 ui.separator();
 
+                ui.label(RichText::new("Insertar o borrar beats en el cursor").strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut ins_beats).speed(0.25).range(0.0..=10000.0).max_decimals(3).suffix(" beats"));
+                    egui::ComboBox::from_id_salt("insert_target")
+                        .selected_text(if ins_all { "Todos los charts" } else { "Este chart" })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut ins_all, false, "Este chart");
+                            ui.selectable_value(&mut ins_all, true, "Todos los charts");
+                        })
+                        .response
+                        .on_hover_text("A qué notas y cambios de tempo se aplica");
+                });
+                let ins_rows = (ins_beats * ROWS_PER_BEAT as f64).round() as i32;
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(ins_rows > 0, egui::Button::new("Insertar"))
+                        .on_hover_text("Desplaza hacia abajo las notas y los cambios de tempo desde el cursor")
+                        .clicked()
+                    {
+                        actions.push(TempoAction::InsertRows(ins_rows, ins_all));
+                    }
+                    if ui
+                        .add_enabled(ins_rows > 0, egui::Button::new("Borrar"))
+                        .on_hover_text("Elimina las notas y los cambios de tempo de esa zona y sube lo que viene después")
+                        .clicked()
+                    {
+                        actions.push(TempoAction::InsertRows(-ins_rows, ins_all));
+                    }
+                });
+                if !ins_all && !own {
+                    let others = song.charts.iter().filter(|c| c.timing.is_none()).count().saturating_sub(1);
+                    if others > 0 {
+                        ui.small(format!(
+                            "Este chart usa el timing de la canción: sus cambios de tempo también se moverán para los otros {} charts que lo usan (sus notas no).",
+                            others
+                        ));
+                    }
+                }
+                ui.separator();
+
                 egui::CollapsingHeader::new("Todos los segmentos").default_open(false).show(ui, |ui| {
                     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                         for kind in SegKind::ALL {
@@ -1457,6 +1652,8 @@ impl App {
                 });
             });
         self.show_tempo = open;
+        self.insert_beats = ins_beats;
+        self.insert_all_charts = ins_all;
         self.apply_tempo_actions(ctx, actions);
     }
 
@@ -1628,12 +1825,9 @@ impl App {
             on!(none, Key::Plus, |a: &mut App| a.zoom(1.2));
             on!(none, Key::Equals, |a: &mut App| a.zoom(1.2));
             on!(none, Key::Minus, |a: &mut App| a.zoom(1.0 / 1.2));
-            on!(none, Key::Slash, |a: &mut App| {
-                let players = a.chart().map(|c| c.players).unwrap_or(1).max(1);
-                a.current_player = a.current_player % players + 1;
-                let p = a.current_player;
-                a.msg(format!("Jugador para notas nuevas: P{}", p));
-            });
+            on!(none, Key::Slash, |a: &mut App| a.slash_key());
+            // La tecla bajo Esc (` en inglés, º en español), como "accent" en ArrowVortex.
+            on!(none, Key::Backtick, |a: &mut App| a.convert_selection(Convert::HoldsRolls));
             on!(shift, Key::R, |a: &mut App| a.view.reverse = !a.view.reverse);
             on!(shift, Key::V, |a: &mut App| a.view.time_based = !a.view.time_based);
             on!(shift, Key::M, |a: &mut App| a.view.show_minimap = !a.view.show_minimap);
@@ -1967,6 +2161,72 @@ impl App {
                     if ui.add_enabled(has_sel, egui::Button::new("Espejo completo").shortcut_text("G")).clicked() {
                         ui.close_menu();
                         self.mirror_selection(true, true);
+                    }
+                    let num_cols = self.num_cols();
+                    if ui
+                        .add_enabled(has_sel && num_cols >= 6, egui::Button::new("Cambiar de lado (izquierda ↔ derecha)"))
+                        .on_hover_text("Pasa las notas a la otra mitad del pad sin espejarlas (en double, del pad de P1 al de P2)")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                        self.switch_side();
+                    }
+                    ui.separator();
+                    let mut conv: Option<Convert> = None;
+                    let mut scale: Option<(i32, i32)> = None;
+                    ui.add_enabled_ui(has_sel, |ui| {
+                        ui.menu_button("Convertir", |ui| {
+                            for (i, (a, b)) in Convert::TYPES.into_iter().enumerate() {
+                                if i == 3 || i == 6 {
+                                    ui.separator();
+                                }
+                                let c = Convert::Type(a, b);
+                                if ui.button(c.label()).clicked() {
+                                    conv = Some(c);
+                                }
+                            }
+                            ui.separator();
+                            for c in [Convert::HoldsToSteps, Convert::HoldsToMines] {
+                                if ui.button(c.label()).clicked() {
+                                    conv = Some(c);
+                                }
+                            }
+                            if ui.add(egui::Button::new(Convert::HoldsRolls.label()).shortcut_text("º / `")).clicked() {
+                                conv = Some(Convert::HoldsRolls);
+                            }
+                        });
+                        ui.menu_button("Escalar", |ui| {
+                            ui.weak("Respecto a la primera nota de la selección");
+                            for (num, den, label) in [
+                                (2, 1, "2:1  expandir al doble"),
+                                (3, 2, "3:2  expandir ×1.5"),
+                                (4, 3, "4:3  expandir ×1.33"),
+                                (1, 2, "1:2  comprimir a la mitad"),
+                                (2, 3, "2:3  comprimir ×0.67"),
+                                (3, 4, "3:4  comprimir ×0.75"),
+                            ] {
+                                if num == 1 {
+                                    ui.separator();
+                                }
+                                if ui.button(label).clicked() {
+                                    scale = Some((num, den));
+                                }
+                            }
+                        });
+                    });
+                    if let Some(c) = conv {
+                        ui.close_menu();
+                        self.convert_selection(c);
+                    }
+                    if let Some((num, den)) = scale {
+                        ui.close_menu();
+                        self.scale_selection(num, den);
+                    }
+                    if self.chart().map(|c| c.players).unwrap_or(1) > 1 {
+                        if ui.add_enabled(has_sel, egui::Button::new("Pasar la selección al jugador siguiente").shortcut_text("/")).clicked() {
+                            ui.close_menu();
+                            self.slash_key();
+                        }
                     }
                 });
                 ui.menu_button("Tempo", |ui| {
@@ -2590,7 +2850,7 @@ impl App {
                     ("1..9, 0", "Poner/quitar nota en la columna (mantener + mover = hold)"),
                     ("Shift+1..0", "Igual, pero mantener + mover crea un roll"),
                     ("Alt+1..0", "Poner/quitar mina"),
-                    ("/", "Cambiar jugador para notas nuevas (co-op)"),
+                    ("/", "Co-op: jugador de las notas nuevas o, con selección, pasarla al siguiente"),
                     ("Ctrl+Z / Ctrl+Y", "Deshacer / rehacer"),
                     ("Tab", "Empezar / cerrar una región en el cursor"),
                     ("Arrastrar con el mouse", "Selección rectangular (filas y columnas)"),
@@ -2601,6 +2861,7 @@ impl App {
                     ("Ctrl+C / Ctrl+X / Ctrl+V", "Copiar / cortar / pegar en el cursor"),
                     ("Supr", "Borrar la selección"),
                     ("Y / T / G", "Espejo horizontal / vertical / completo"),
+                    ("º (tecla bajo Esc)", "Holds ↔ rolls en la selección"),
                     ("Shift+T (o Shift+S)", "Editor de tempo y sincronía"),
                     ("Shift+P / Shift+C", "Propiedades de la canción / del chart"),
                     ("Shift+N / Ctrl+Supr", "Nuevo chart / borrar chart"),

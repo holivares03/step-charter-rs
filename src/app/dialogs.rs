@@ -97,7 +97,7 @@ fn fmt_num(v: f64) -> String {
 
 impl App {
     /// Foto de la canción completa para deshacer (cambios de propiedades, charts nuevos o borrados).
-    fn song_snapshot(&self) -> Option<UndoEntry> {
+    pub(super) fn song_snapshot(&self) -> Option<UndoEntry> {
         let s = self.song.as_ref()?;
         Some(UndoEntry::Song { header: s.header.clone(), timing: s.timing.clone(), charts: s.charts.clone(), chart_idx: self.chart_idx })
     }
