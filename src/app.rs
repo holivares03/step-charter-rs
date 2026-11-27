@@ -9,7 +9,7 @@ use std::time::Instant;
 use egui::{Color32, Event, Key, Modifiers, RichText};
 
 use crate::audio::{self, AudioData, AudioPlayer, Waveform};
-use crate::edit::{self, Clip, Convert, NoteFilter, SegKind, Selection};
+use crate::edit::{self, Clip, Convert, NoteFilter, SegKind, SegValue, Selection, TempoClip};
 use crate::minimap::{self, MinimapInput};
 use crate::notefield::{self, FieldInput, Layout, ViewSettings};
 use crate::noteskin::{self, ExternalSkin, Noteskin};
@@ -50,13 +50,102 @@ enum UndoEntry {
 /// Acciones del editor de tempo (se aplican después de dibujar la ventana).
 enum TempoAction {
     Offset(f64),
-    Set(SegKind, i32, f64),
+    Set(SegKind, i32, SegValue),
     Remove(SegKind, i32),
+    Tool(TempoTool),
     Jump(i32),
     CreateOwn,
     DropOwn,
     /// Insertar (filas > 0) o borrar (filas < 0) en el cursor; `true` = en todos los charts.
     InsertRows(i32, bool),
+}
+
+/// Herramientas del menú *Tempo* (también como botones en el editor de tempo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TempoTool {
+    /// Ctrl+B: cambios de BPM sin cambiar el valor en los extremos de la selección o en el cursor.
+    BoundingBpm,
+    RegionStop,
+    RegionStutter,
+    CopyTempo,
+    PasteTempo,
+}
+
+/// Una fila del editor de tempo: nombre, editor según el tipo de valor y quitar / heredado.
+fn tempo_seg_row(ui: &mut egui::Ui, td: &TimingData, kind: SegKind, row: i32, actions: &mut Vec<TempoAction>) {
+    let exact = edit::seg_at(td, kind, row);
+    let value = edit::seg_effective(td, kind, row);
+    let name = if exact.is_some() { RichText::new(kind.name()).strong() } else { RichText::new(kind.name()) };
+    ui.label(name).on_hover_text(kind.help());
+    let mut new: Option<SegValue> = None;
+    ui.horizontal(|ui| match value.clone() {
+        SegValue::Num(mut v) => {
+            let unit = kind.unit();
+            let mut dv = egui::DragValue::new(&mut v).suffix(if unit.is_empty() { String::new() } else { format!(" {}", unit) });
+            dv = match kind {
+                SegKind::Ticks => dv.speed(0.05).range(0.0..=1000.0).fixed_decimals(0),
+                SegKind::Bpm => dv.speed(0.1).range(kind.min()..=100000.0).fixed_decimals(3),
+                SegKind::Scroll | SegKind::Warp | SegKind::Fake => dv.speed(0.01).range(kind.min()..=100000.0).fixed_decimals(3),
+                _ => dv.speed(0.001).range(kind.min()..=100000.0).fixed_decimals(3),
+            };
+            if ui.add(dv).changed() {
+                new = Some(SegValue::Num(v));
+            }
+        }
+        SegValue::Pair(mut a, mut b) => {
+            let (ta, sep, tb) =
+                if kind == SegKind::TimeSig { ("Beats por compás", "/", "Figura del beat") } else { ("Multiplicador al acertar", "·", "Multiplicador al fallar") };
+            let ca = ui.add(egui::DragValue::new(&mut a).speed(0.05).range(1..=1000)).on_hover_text(ta).changed();
+            ui.label(sep);
+            let cb = ui.add(egui::DragValue::new(&mut b).speed(0.05).range(1..=1000)).on_hover_text(tb).changed();
+            if ca || cb {
+                new = Some(SegValue::Pair(a, b));
+            }
+        }
+        SegValue::Speed(mut r, mut d, mut u) => {
+            let cr = ui.add(egui::DragValue::new(&mut r).speed(0.01).range(-1000.0..=1000.0).fixed_decimals(3).suffix("x")).on_hover_text("Factor de velocidad").changed();
+            let cd = ui
+                .add(egui::DragValue::new(&mut d).speed(0.01).range(0.0..=1000.0).fixed_decimals(3))
+                .on_hover_text("Duración de la transición hasta el nuevo factor")
+                .changed();
+            let before = u;
+            egui::ComboBox::from_id_salt("speed_unit").width(70.0).selected_text(if u == 1 { "segundos" } else { "beats" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut u, 0, "beats");
+                ui.selectable_value(&mut u, 1, "segundos");
+            });
+            if cr || cd || u != before {
+                new = Some(SegValue::Speed(r, d, u));
+            }
+        }
+        SegValue::Label(mut t) => {
+            if ui.add(egui::TextEdit::singleline(&mut t).desired_width(150.0)).on_hover_text(kind.help()).changed() {
+                new = Some(SegValue::Label(t));
+            }
+        }
+    });
+    if let Some(v) = new {
+        actions.push(TempoAction::Set(kind, row, v));
+    }
+    ui.horizontal(|ui| {
+        if exact.is_some() {
+            let can = edit::seg_can_remove(td, kind, row);
+            if ui.add_enabled(can, egui::Button::new("✖").small()).on_hover_text("Quitar este segmento").clicked() {
+                actions.push(TempoAction::Remove(kind, row));
+            }
+        } else {
+            ui.weak(if kind.inherits() { "heredado" } else { "—" });
+        }
+        if matches!(kind, SegKind::Bpm | SegKind::Scroll) {
+            let v = value.num();
+            if ui.small_button("×2").on_hover_text("Doblar").clicked() {
+                actions.push(TempoAction::Set(kind, row, SegValue::Num(v * 2.0)));
+            }
+            if ui.small_button("÷2").on_hover_text("Mitad").clicked() {
+                actions.push(TempoAction::Set(kind, row, SegValue::Num(v / 2.0)));
+            }
+        }
+    });
+    ui.end_row();
 }
 
 /// ¿Hay un campo de texto con el foco? (entonces los atajos no se procesan)
@@ -210,6 +299,8 @@ pub struct App {
     /// Editor de tempo → insertar / borrar beats: cantidad y si se aplica a todos los charts.
     insert_beats: f64,
     insert_all_charts: bool,
+    /// Cambios de tempo copiados (Tempo → Copiar tempo de la selección).
+    tempo_clipboard: Option<TempoClip>,
 }
 
 fn setup_fonts(ctx: &egui::Context) {
@@ -353,6 +444,7 @@ impl App {
             preview_stop: None,
             insert_beats: 1.0,
             insert_all_charts: false,
+            tempo_clipboard: None,
         };
         if let Some(n) = start.noteskin.clone() {
             app.view.noteskin = n;
@@ -1335,6 +1427,89 @@ impl App {
         });
     }
 
+    /// Herramientas de tempo: BPM límite (Ctrl+B), selección → stop / stutter y copiar / pegar
+    /// tempo. Actúan sobre el timing que usa el chart (el propio o el de la canción).
+    fn tempo_tool(&mut self, tool: TempoTool) {
+        if self.audio.is_playing() {
+            return;
+        }
+        let idx = self.chart_idx;
+        let cursor = self.cursor_row();
+        let sel = self.selection.clone();
+        if tool == TempoTool::CopyTempo {
+            let Some(sel) = self.need_selection() else { return };
+            let Some(song) = self.song.as_ref() else { return };
+            let clip = edit::copy_tempo(song.chart_timing(idx), sel.r0, sel.r1);
+            if clip.segs.is_empty() {
+                self.msg("No hay cambios de tempo en la selección.");
+            } else {
+                self.msg(format!("Copiados {} cambios de tempo", clip.segs.len()));
+                self.tempo_clipboard = Some(clip);
+            }
+            return;
+        }
+        let region = match (tool, &sel) {
+            (TempoTool::RegionStop | TempoTool::RegionStutter, None) => {
+                self.need_selection();
+                return;
+            }
+            (_, Some(s)) => Some((s.r0, s.r1)),
+            _ => None,
+        };
+        let clip = self.tempo_clipboard.clone();
+        if tool == TempoTool::PasteTempo && clip.is_none() {
+            self.msg("No hay tempo copiado (Tempo → Copiar tempo de la selección).");
+            return;
+        }
+        self.tempo_edit_active = false;
+        self.push_undo_timing();
+        let Some(td) = self.edit_timing_mut() else { return };
+        let beat = |r: i32| row_to_beat(r);
+        let result: Result<String, String> = match tool {
+            TempoTool::BoundingBpm => {
+                let rows = match region {
+                    Some((r0, r1)) => vec![r0, r1],
+                    None => vec![cursor],
+                };
+                match edit::add_bounding_bpms(td, &rows) {
+                    0 => Err("Ya hay un cambio de BPM ahí (o es el beat 0).".to_string()),
+                    1 => Ok("Agregado 1 cambio de BPM con el mismo valor".to_string()),
+                    n => Ok(format!("Agregados {} cambios de BPM con el mismo valor", n)),
+                }
+            }
+            TempoTool::RegionStop => {
+                let (r0, r1) = region.unwrap_or((cursor, cursor));
+                edit::region_to_stop(td, r0, r1)
+                    .map(|s| format!("Stop de {:.3} s en el beat {:.3}; para no retrasar lo que sigue, borra esos beats", s, beat(r0)))
+                    .ok_or_else(|| "La selección no dura nada.".to_string())
+            }
+            TempoTool::RegionStutter => {
+                let (r0, r1) = region.unwrap_or((cursor, cursor));
+                edit::region_to_stutter(td, r0, r1)
+                    .map(|(half, bpm)| format!("Stutter en el beat {:.3}: stop de {:.3} s y {:.3} BPM", beat(r0), half, bpm))
+                    .ok_or_else(|| "La selección es demasiado corta para un stutter.".to_string())
+            }
+            TempoTool::PasteTempo => {
+                let clip = clip.unwrap_or(TempoClip { span: 0, segs: Vec::new() });
+                let n = edit::paste_tempo(td, &clip, cursor);
+                Ok(format!("Pegados {} cambios de tempo en el beat {:.3}", n, beat(cursor)))
+            }
+            TempoTool::CopyTempo => unreachable!(),
+        };
+        match result {
+            Ok(m) => {
+                self.dirty = true;
+                self.after_timing_change();
+                self.msg(m);
+            }
+            Err(m) => {
+                // No cambió nada: se descarta el paso de deshacer.
+                self.undo.pop();
+                self.msg(m);
+            }
+        }
+    }
+
     /// Inserta (`rows > 0`) o borra (`rows < 0`) filas en el cursor, desplazando notas y
     /// segmentos de timing: en este chart (y el timing que usa) o en todos los charts.
     fn insert_rows(&mut self, rows: i32, all_charts: bool) {
@@ -1418,6 +1593,7 @@ impl App {
                     self.insert_rows(rows, all);
                     changed = true;
                 }
+                TempoAction::Tool(tool) => self.tempo_tool(tool),
                 TempoAction::CreateOwn | TempoAction::DropOwn => {
                     let idx = self.chart_idx;
                     let Some(song) = self.song.as_ref() else { continue };
@@ -1520,7 +1696,7 @@ impl App {
                         .on_hover_text("Tempo en el primer beat")
                         .changed()
                     {
-                        actions.push(TempoAction::Set(SegKind::Bpm, first_row, v));
+                        actions.push(TempoAction::Set(SegKind::Bpm, first_row, SegValue::Num(v)));
                     }
                 });
                 ui.horizontal(|ui| {
@@ -1541,49 +1717,41 @@ impl App {
 
                 ui.label(format!("En el cursor: beat {:.3}  (fila {})", row_to_beat(row), row));
                 egui::Grid::new("tempo_at_cursor").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
-                    for kind in SegKind::ALL {
-                        let exact = edit::seg_at(td, kind, row);
-                        let mut v = edit::seg_effective(td, kind, row);
-                        let label = if exact.is_some() { RichText::new(kind.name()).strong() } else { RichText::new(kind.name()) };
-                        ui.label(label);
-                        let speed = match kind {
-                            SegKind::Bpm => 0.1,
-                            SegKind::Scroll | SegKind::Warp => 0.01,
-                            _ => 0.001,
-                        };
-                        let unit = kind.unit();
-                        let resp = ui.add(
-                            egui::DragValue::new(&mut v)
-                                .speed(speed)
-                                .range(kind.min()..=100000.0)
-                                .fixed_decimals(3)
-                                .suffix(if unit.is_empty() { String::new() } else { format!(" {}", unit) }),
-                        );
-                        if resp.changed() {
-                            actions.push(TempoAction::Set(kind, row, v));
-                        }
-                        ui.horizontal(|ui| {
-                            if exact.is_some() {
-                                let can = edit::seg_can_remove(td, kind, row);
-                                if ui.add_enabled(can, egui::Button::new("✖").small()).on_hover_text("Quitar este segmento").clicked() {
-                                    actions.push(TempoAction::Remove(kind, row));
-                                }
-                            } else {
-                                ui.weak(if kind.inherits() { "heredado" } else { "—" });
-                            }
-                            if kind == SegKind::Bpm {
-                                if ui.small_button("×2").on_hover_text("Doblar el BPM").clicked() {
-                                    actions.push(TempoAction::Set(kind, row, v * 2.0));
-                                }
-                                if ui.small_button("÷2").on_hover_text("Mitad del BPM").clicked() {
-                                    actions.push(TempoAction::Set(kind, row, v / 2.0));
-                                }
-                            }
-                        });
-                        ui.end_row();
+                    for kind in SegKind::BASIC {
+                        tempo_seg_row(ui, td, kind, row, &mut actions);
                     }
                 });
                 ui.small("Si cambias un valor donde no hay segmento, se crea uno en el cursor.");
+                ui.horizontal_wrapped(|ui| {
+                    let has_sel = self.selection.is_some();
+                    let tip = if has_sel {
+                        "Cambios de BPM con el mismo valor al inicio y al final de la selección: no alteran la sincronía y permiten ajustar el tempo sólo entre ellos"
+                    } else {
+                        "Cambio de BPM con el mismo valor en el cursor: no altera la sincronía y sirve de límite para ajustar el tempo"
+                    };
+                    if ui.small_button("BPM límite (Ctrl+B)").on_hover_text(tip).clicked() {
+                        actions.push(TempoAction::Tool(TempoTool::BoundingBpm));
+                    }
+                    let stop_tip = "Un stop en el inicio de la selección que dura lo mismo que ella (lo que sigue se retrasa: luego suele borrarse esa zona)";
+                    if ui.add_enabled(has_sel, egui::Button::new("Selección → stop").small()).on_hover_text(stop_tip).clicked() {
+                        actions.push(TempoAction::Tool(TempoTool::RegionStop));
+                    }
+                    let stutter_tip = "Gimmick: la mitad del tiempo de la selección es un stop y en la otra mitad pasan sus beats más rápido. No desfasa lo que sigue";
+                    if ui.add_enabled(has_sel, egui::Button::new("Selección → stutter").small()).on_hover_text(stutter_tip).clicked() {
+                        actions.push(TempoAction::Tool(TempoTool::RegionStutter));
+                    }
+                });
+                ui.separator();
+
+                egui::CollapsingHeader::new("StepMania 5: compás, ticks, combo, speed, scroll, fakes y labels")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new("tempo_sm5").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
+                            for kind in SegKind::SM5 {
+                                tempo_seg_row(ui, td, kind, row, &mut actions);
+                            }
+                        });
+                    });
                 ui.separator();
 
                 ui.label(RichText::new("Insertar o borrar beats en el cursor").strong());
@@ -1643,7 +1811,7 @@ impl App {
                                     if ui.add_enabled(can, egui::Button::new("✖").small()).clicked() {
                                         actions.push(TempoAction::Remove(kind, r));
                                     }
-                                    let txt = RichText::new(edit::seg_label(kind, r, v)).monospace();
+                                    let txt = RichText::new(edit::seg_label(kind, r, &v)).monospace();
                                     ui.label(if r == row { txt.strong() } else { txt });
                                 });
                             }
@@ -1825,6 +1993,7 @@ impl App {
             on!(none, Key::Plus, |a: &mut App| a.zoom(1.2));
             on!(none, Key::Equals, |a: &mut App| a.zoom(1.2));
             on!(none, Key::Minus, |a: &mut App| a.zoom(1.0 / 1.2));
+            on!(ctrl, Key::B, |a: &mut App| a.tempo_tool(TempoTool::BoundingBpm));
             on!(none, Key::Slash, |a: &mut App| a.slash_key());
             // En teclados españoles `/` se escribe con Shift+7.
             on!(shift, Key::Slash, |a: &mut App| a.slash_key());
@@ -2235,6 +2404,34 @@ impl App {
                     if ui.add(egui::Button::new("Editor de tempo y sincronía").shortcut_text("Shift+T")).clicked() {
                         ui.close_menu();
                         self.show_tempo = true;
+                    }
+                    ui.separator();
+                    let has_sel = self.selection.is_some();
+                    let mut tool: Option<TempoTool> = None;
+                    let bpm_label = if has_sel { "Cambio de BPM que encierra la selección" } else { "Cambio de BPM límite en el cursor" };
+                    if ui
+                        .add(egui::Button::new(bpm_label).shortcut_text("Ctrl+B"))
+                        .on_hover_text("Con el mismo BPM que ya rige: no altera la sincronía y permite ajustar el tempo sólo en esa zona")
+                        .clicked()
+                    {
+                        tool = Some(TempoTool::BoundingBpm);
+                    }
+                    if ui.add_enabled(has_sel, egui::Button::new("Convertir la selección en stop")).clicked() {
+                        tool = Some(TempoTool::RegionStop);
+                    }
+                    if ui.add_enabled(has_sel, egui::Button::new("Convertir la selección en stutter")).clicked() {
+                        tool = Some(TempoTool::RegionStutter);
+                    }
+                    ui.separator();
+                    if ui.add_enabled(has_sel, egui::Button::new("Copiar tempo de la selección")).clicked() {
+                        tool = Some(TempoTool::CopyTempo);
+                    }
+                    if ui.add_enabled(self.tempo_clipboard.is_some(), egui::Button::new("Pegar tempo en el cursor")).clicked() {
+                        tool = Some(TempoTool::PasteTempo);
+                    }
+                    if let Some(t) = tool {
+                        ui.close_menu();
+                        self.tempo_tool(t);
                     }
                 });
                 ui.menu_button("Chart", |ui| {
@@ -2865,6 +3062,7 @@ impl App {
                     ("Y / T / G", "Espejo horizontal / vertical / completo"),
                     ("º (tecla bajo Esc)", "Holds ↔ rolls en la selección"),
                     ("Shift+T (o Shift+S)", "Editor de tempo y sincronía"),
+                    ("Ctrl+B", "Cambio de BPM límite (en el cursor o encerrando la selección)"),
                     ("Shift+P / Shift+C", "Propiedades de la canción / del chart"),
                     ("Shift+N / Ctrl+Supr", "Nuevo chart / borrar chart"),
                     ("F3 / F4", "Tick de beat / tick de notas"),
