@@ -736,17 +736,62 @@ pub fn insert_rows_timing(td: &mut TimingData, at: i32, n: i32) {
 // Segmentos de timing
 // ---------------------------------------------------------------------------
 
+/// Tipos de segmento que se editan: los del *Adjust Tempo* de ArrowVortex (BPM, stop, delay,
+/// warp) y los de su *Adjust Tempo (SM5)*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegKind {
     Bpm,
     Stop,
     Delay,
     Warp,
+    TimeSig,
+    Ticks,
+    Combo,
+    Speed,
     Scroll,
+    Fake,
+    Label,
+}
+
+/// Valor de un segmento.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SegValue {
+    /// BPM, stop y delay (segundos), warp y fake (beats), scroll (x) y ticks.
+    Num(f64),
+    /// Time signature (beats por compás / figura) o combo (multiplicador de acierto / fallo).
+    Pair(i32, i32),
+    /// Speed: factor, duración de la transición y unidad (0 = beats, 1 = segundos).
+    Speed(f64, f64, i32),
+    Label(String),
+}
+
+impl SegValue {
+    pub fn num(&self) -> f64 {
+        match self {
+            SegValue::Num(v) => *v,
+            _ => 0.0,
+        }
+    }
 }
 
 impl SegKind {
-    pub const ALL: [SegKind; 5] = [SegKind::Bpm, SegKind::Stop, SegKind::Delay, SegKind::Warp, SegKind::Scroll];
+    pub const ALL: [SegKind; 11] = [
+        SegKind::Bpm,
+        SegKind::Stop,
+        SegKind::Delay,
+        SegKind::Warp,
+        SegKind::TimeSig,
+        SegKind::Ticks,
+        SegKind::Combo,
+        SegKind::Speed,
+        SegKind::Scroll,
+        SegKind::Fake,
+        SegKind::Label,
+    ];
+    /// Los de *Adjust Tempo* (el resto son los de StepMania 5).
+    pub const BASIC: [SegKind; 4] = [SegKind::Bpm, SegKind::Stop, SegKind::Delay, SegKind::Warp];
+    pub const SM5: [SegKind; 7] =
+        [SegKind::TimeSig, SegKind::Ticks, SegKind::Combo, SegKind::Speed, SegKind::Scroll, SegKind::Fake, SegKind::Label];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -754,79 +799,175 @@ impl SegKind {
             SegKind::Stop => "Stop",
             SegKind::Delay => "Delay",
             SegKind::Warp => "Warp",
+            SegKind::TimeSig => "Compás",
+            SegKind::Ticks => "Ticks",
+            SegKind::Combo => "Combo",
+            SegKind::Speed => "Speed",
             SegKind::Scroll => "Scroll",
+            SegKind::Fake => "Fake",
+            SegKind::Label => "Label",
+        }
+    }
+
+    /// Explicación corta (para la ayuda emergente).
+    pub fn help(self) -> &'static str {
+        match self {
+            SegKind::Bpm => "Tempo en beats por minuto",
+            SegKind::Stop => "Pausa en este beat, en segundos (la nota se toca antes de la pausa)",
+            SegKind::Delay => "Pausa en este beat, en segundos (la nota se toca después de la pausa)",
+            SegKind::Warp => "Salto: los beats siguientes se saltan, en beats",
+            SegKind::TimeSig => "Time signature: beats por compás / figura del beat",
+            SegKind::Ticks => "Ticks de combo por beat mientras se mantiene un hold",
+            SegKind::Combo => "Multiplicador de combo al acertar / al fallar",
+            SegKind::Speed => "Speed: factor de velocidad, duración de la transición y unidad (beats o segundos)",
+            SegKind::Scroll => "Scroll: factor de velocidad de desplazamiento desde este beat",
+            SegKind::Fake => "Zona fake desde este beat: las notas no se evalúan, en beats",
+            SegKind::Label => "Etiqueta de texto (sin comas, punto y coma ni =)",
         }
     }
 
     pub fn unit(self) -> &'static str {
         match self {
-            SegKind::Bpm => "",
             SegKind::Stop | SegKind::Delay => "s",
-            SegKind::Warp => "beats",
+            SegKind::Warp | SegKind::Fake => "beats",
             SegKind::Scroll => "x",
+            _ => "",
         }
     }
 
-    /// Valor mínimo permitido.
+    /// Valor mínimo de los numéricos.
     pub fn min(self) -> f64 {
         match self {
             SegKind::Bpm => 0.001,
-            SegKind::Stop | SegKind::Delay | SegKind::Warp => 0.0,
-            SegKind::Scroll => -100.0,
+            SegKind::Scroll => -100000.0,
+            _ => 0.0,
         }
     }
 
-    /// Si el valor se hereda del segmento anterior (BPM, scroll) o vale 0 fuera del segmento.
+    /// El valor sigue vigente hasta el próximo segmento (BPM, compás, ticks, combo, speed,
+    /// scroll); los demás sólo existen en su beat.
     pub fn inherits(self) -> bool {
-        matches!(self, SegKind::Bpm | SegKind::Scroll)
+        matches!(self, SegKind::Bpm | SegKind::TimeSig | SegKind::Ticks | SegKind::Combo | SegKind::Speed | SegKind::Scroll)
+    }
+
+    /// Valor cuando no hay ningún segmento (los de StepMania 5).
+    fn default_value(self) -> SegValue {
+        match self {
+            SegKind::TimeSig => SegValue::Pair(4, 4),
+            SegKind::Ticks => SegValue::Num(4.0),
+            SegKind::Combo => SegValue::Pair(1, 1),
+            SegKind::Speed => SegValue::Speed(1.0, 0.0, 0),
+            SegKind::Scroll => SegValue::Num(1.0),
+            SegKind::Label => SegValue::Label(String::new()),
+            _ => SegValue::Num(0.0),
+        }
     }
 }
 
-pub fn seg_list(td: &TimingData, kind: SegKind) -> Vec<(i32, f64)> {
+pub fn seg_list(td: &TimingData, kind: SegKind) -> Vec<(i32, SegValue)> {
+    use SegValue::*;
     match kind {
-        SegKind::Bpm => td.bpms.iter().map(|s| (s.row, s.bpm)).collect(),
-        SegKind::Stop => td.stops.iter().map(|s| (s.row, s.seconds)).collect(),
-        SegKind::Delay => td.delays.iter().map(|s| (s.row, s.seconds)).collect(),
-        SegKind::Warp => td.warps.iter().map(|s| (s.row, s.beats)).collect(),
-        SegKind::Scroll => td.scrolls.iter().map(|s| (s.row, s.ratio)).collect(),
+        SegKind::Bpm => td.bpms.iter().map(|s| (s.row, Num(s.bpm))).collect(),
+        SegKind::Stop => td.stops.iter().map(|s| (s.row, Num(s.seconds))).collect(),
+        SegKind::Delay => td.delays.iter().map(|s| (s.row, Num(s.seconds))).collect(),
+        SegKind::Warp => td.warps.iter().map(|s| (s.row, Num(s.beats))).collect(),
+        SegKind::TimeSig => td.time_sigs.iter().map(|s| (s.row, Pair(s.num, s.den))).collect(),
+        SegKind::Ticks => td.tick_counts.iter().map(|s| (s.row, Num(s.ticks as f64))).collect(),
+        SegKind::Combo => td.combos.iter().map(|s| (s.row, Pair(s.hit, s.miss))).collect(),
+        SegKind::Speed => td.speeds.iter().map(|s| (s.row, Speed(s.ratio, s.duration, s.unit))).collect(),
+        SegKind::Scroll => td.scrolls.iter().map(|s| (s.row, Num(s.ratio))).collect(),
+        SegKind::Fake => td.fakes.iter().map(|s| (s.row, Num(s.beats))).collect(),
+        SegKind::Label => td.labels.iter().map(|s| (s.row, Label(s.text.clone()))).collect(),
     }
 }
 
-pub fn seg_at(td: &TimingData, kind: SegKind, row: i32) -> Option<f64> {
+pub fn seg_at(td: &TimingData, kind: SegKind, row: i32) -> Option<SegValue> {
     seg_list(td, kind).into_iter().find(|(r, _)| *r == row).map(|(_, v)| v)
 }
 
-/// Valor vigente en `row` (heredado para BPM/scroll, 0 para stops/delays/warps).
-pub fn seg_effective(td: &TimingData, kind: SegKind, row: i32) -> f64 {
+/// Valor vigente en `row`: el del segmento de esa fila; si no hay, el último anterior (para
+/// los que se heredan) o el valor por defecto.
+pub fn seg_effective(td: &TimingData, kind: SegKind, row: i32) -> SegValue {
     if let Some(v) = seg_at(td, kind, row) {
         return v;
     }
-    match kind {
-        SegKind::Bpm => td.bpm_at_row(row),
-        SegKind::Scroll => td.scrolls.iter().filter(|s| s.row <= row).last().map(|s| s.ratio).unwrap_or(1.0),
-        _ => 0.0,
+    if kind == SegKind::Bpm {
+        return SegValue::Num(td.bpm_at_row(row));
     }
+    if kind.inherits() {
+        if let Some((_, v)) = seg_list(td, kind).into_iter().filter(|(r, _)| *r <= row).last() {
+            return v;
+        }
+    }
+    kind.default_value()
 }
 
-/// Inserta o reemplaza el segmento en `row`.
-pub fn seg_set(td: &mut TimingData, kind: SegKind, row: i32, value: f64) {
-    let value = value.max(kind.min());
+/// Texto de label válido: StepMania usa `,`, `;` y `=` como separadores.
+pub fn clean_label(text: &str) -> String {
+    text.replace([',', ';', '='], "_")
+}
+
+/// Inserta o reemplaza el segmento en `row`, ajustando el valor a su rango. En los que sólo
+/// existen en su beat (stop, delay, warp, fake, label), un valor 0 o vacío quita el segmento.
+pub fn seg_set(td: &mut TimingData, kind: SegKind, row: i32, value: SegValue) {
+    use crate::simfile::timing::{ComboSeg, LabelSeg, SpeedSeg, TickSeg, TimeSigSeg};
     macro_rules! upsert {
-        ($list:expr, $make:expr, $field:ident) => {{
-            if let Some(s) = $list.iter_mut().find(|s| s.row == row) {
-                s.$field = value;
-            } else {
-                $list.push($make);
-                $list.sort_by_key(|s| s.row);
+        ($list:expr, $seg:expr) => {{
+            let seg = $seg;
+            match $list.iter_mut().find(|s| s.row == row) {
+                Some(s) => *s = seg,
+                None => {
+                    $list.push(seg);
+                    $list.sort_by_key(|s| s.row);
+                }
             }
         }};
     }
+    let n = value.num().max(kind.min());
+    if !kind.inherits() {
+        let empty = match &value {
+            SegValue::Label(t) => clean_label(t).trim().is_empty(),
+            _ => n <= 0.0,
+        };
+        if empty {
+            seg_remove(td, kind, row);
+            return;
+        }
+    }
+    let pair = |lo: i32| match value {
+        SegValue::Pair(a, b) => (a.clamp(lo, 1000), b.clamp(lo, 1000)),
+        _ => (lo, lo),
+    };
     match kind {
-        SegKind::Bpm => upsert!(td.bpms, BpmSeg { row, bpm: value }, bpm),
-        SegKind::Stop => upsert!(td.stops, StopSeg { row, seconds: value }, seconds),
-        SegKind::Delay => upsert!(td.delays, StopSeg { row, seconds: value }, seconds),
-        SegKind::Warp => upsert!(td.warps, WarpSeg { row, beats: value }, beats),
-        SegKind::Scroll => upsert!(td.scrolls, ScrollSeg { row, ratio: value }, ratio),
+        SegKind::Bpm => upsert!(td.bpms, BpmSeg { row, bpm: n }),
+        SegKind::Stop => upsert!(td.stops, StopSeg { row, seconds: n }),
+        SegKind::Delay => upsert!(td.delays, StopSeg { row, seconds: n }),
+        SegKind::Warp => upsert!(td.warps, WarpSeg { row, beats: n }),
+        SegKind::Fake => upsert!(td.fakes, WarpSeg { row, beats: n }),
+        SegKind::Scroll => upsert!(td.scrolls, ScrollSeg { row, ratio: n }),
+        SegKind::Ticks => upsert!(td.tick_counts, TickSeg { row, ticks: (n.round() as i32).clamp(0, 1000) }),
+        SegKind::TimeSig => {
+            let (num, den) = pair(1);
+            upsert!(td.time_sigs, TimeSigSeg { row, num, den })
+        }
+        SegKind::Combo => {
+            let (hit, miss) = pair(1);
+            upsert!(td.combos, ComboSeg { row, hit, miss })
+        }
+        SegKind::Speed => {
+            let (ratio, duration, unit) = match value {
+                SegValue::Speed(r, d, u) => (r.clamp(-1000.0, 1000.0), d.clamp(0.0, 1000.0), u.clamp(0, 1)),
+                _ => (1.0, 0.0, 0),
+            };
+            upsert!(td.speeds, SpeedSeg { row, ratio, duration, unit })
+        }
+        SegKind::Label => {
+            let text = match &value {
+                SegValue::Label(t) => clean_label(t),
+                _ => String::new(),
+            };
+            upsert!(td.labels, LabelSeg { row, text })
+        }
     }
 }
 
@@ -847,14 +988,130 @@ pub fn seg_remove(td: &mut TimingData, kind: SegKind, row: i32) -> bool {
         SegKind::Stop => td.stops.retain(|s| s.row != row),
         SegKind::Delay => td.delays.retain(|s| s.row != row),
         SegKind::Warp => td.warps.retain(|s| s.row != row),
+        SegKind::TimeSig => td.time_sigs.retain(|s| s.row != row),
+        SegKind::Ticks => td.tick_counts.retain(|s| s.row != row),
+        SegKind::Combo => td.combos.retain(|s| s.row != row),
+        SegKind::Speed => td.speeds.retain(|s| s.row != row),
         SegKind::Scroll => td.scrolls.retain(|s| s.row != row),
+        SegKind::Fake => td.fakes.retain(|s| s.row != row),
+        SegKind::Label => td.labels.retain(|s| s.row != row),
     }
     true
 }
 
+/// Valor en texto ("4/4", "1.500x en 2.000 beats", "0.250 s").
+pub fn seg_value_text(kind: SegKind, value: &SegValue) -> String {
+    match (kind, value) {
+        (SegKind::Ticks, SegValue::Num(v)) => format!("{}", v.round() as i32),
+        (_, SegValue::Num(v)) => {
+            let unit = kind.unit();
+            if unit.is_empty() {
+                format!("{:.3}", v)
+            } else if unit == "x" {
+                format!("{:.3}x", v)
+            } else {
+                format!("{:.3} {}", v, unit)
+            }
+        }
+        (SegKind::Combo, SegValue::Pair(a, b)) => format!("x{} / x{}", a, b),
+        (_, SegValue::Pair(a, b)) => format!("{}/{}", a, b),
+        (_, SegValue::Speed(r, d, u)) => {
+            if *d > 0.0 {
+                format!("{:.3}x en {:.3} {}", r, d, if *u == 1 { "s" } else { "beats" })
+            } else {
+                format!("{:.3}x", r)
+            }
+        }
+        (_, SegValue::Label(t)) => format!("\"{}\"", t),
+    }
+}
+
 /// Texto corto para un segmento (para listas).
-pub fn seg_label(kind: SegKind, row: i32, value: f64) -> String {
-    format!("beat {:>9.3}   {} {:.3}{}", row_to_beat(row), kind.name(), value, kind.unit())
+pub fn seg_label(kind: SegKind, row: i32, value: &SegValue) -> String {
+    format!("beat {:>9.3}   {} {}", row_to_beat(row), kind.name(), seg_value_text(kind, value))
+}
+
+// ---------------------------------------------------------------------------
+// Herramientas de tempo (Adjust Tempo de ArrowVortex)
+// ---------------------------------------------------------------------------
+
+/// *Add bounding BPM change* (Ctrl+B): agrega en cada fila un cambio de BPM con el BPM que ya
+/// rige ahí, así que no altera la sincronía; sirven de límites para ajustar el tempo sólo entre
+/// ellos. Se omiten la fila 0 y las que ya tienen un BPM. Devuelve cuántos se agregaron.
+pub fn add_bounding_bpms(td: &mut TimingData, rows: &[i32]) -> usize {
+    let new: Vec<(i32, f64)> = rows
+        .iter()
+        .copied()
+        .filter(|&r| r > 0 && seg_at(td, SegKind::Bpm, r).is_none())
+        .map(|r| (r, td.bpm_at_row(r)))
+        .collect();
+    let mut added = 0;
+    for (r, bpm) in new {
+        if seg_at(td, SegKind::Bpm, r).is_none() {
+            seg_set(td, SegKind::Bpm, r, SegValue::Num(bpm));
+            added += 1;
+        }
+    }
+    added
+}
+
+/// *Convert the selected region to a stop*: un stop en `r0` que dura lo mismo que la región.
+/// (Lo que sigue se retrasa ese tiempo: luego se suelen borrar esos beats.) Devuelve la duración.
+pub fn region_to_stop(td: &mut TimingData, r0: i32, r1: i32) -> Option<f64> {
+    let table = td.build_table();
+    let secs = table.time_at_row(r1) - table.time_at_row(r0);
+    if r1 <= r0 || secs <= 0.0 {
+        return None;
+    }
+    seg_set(td, SegKind::Stop, r0, SegValue::Num(secs));
+    Some(secs)
+}
+
+/// *Convert the selected region to a stutter gimmick*: la mitad del tiempo de la región es un
+/// stop en `r0` y en la otra mitad pasan todas sus filas con un BPM más rápido; en `r1` vuelve
+/// el BPM que había. La duración total no cambia. Devuelve (stop, BPM del stutter).
+pub fn region_to_stutter(td: &mut TimingData, r0: i32, r1: i32) -> Option<(f64, f64)> {
+    use crate::simfile::timing::ROWS_PER_BEAT;
+    let table = td.build_table();
+    let secs = table.time_at_row(r1) - table.time_at_row(r0);
+    if r1 - r0 < 2 || secs <= 0.0 {
+        return None;
+    }
+    let half = secs * 0.5;
+    let bpm = 60.0 * (r1 - r0) as f64 / ROWS_PER_BEAT as f64 / half;
+    let end_bpm = td.bpm_at_row(r1);
+    seg_set(td, SegKind::Stop, r0, SegValue::Num(half));
+    seg_set(td, SegKind::Bpm, r0, SegValue::Num(bpm));
+    seg_set(td, SegKind::Bpm, r1, SegValue::Num(end_bpm));
+    Some((half, bpm))
+}
+
+/// Segmentos de timing copiados, con filas relativas al inicio de la región.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TempoClip {
+    pub span: i32,
+    pub segs: Vec<(SegKind, i32, SegValue)>,
+}
+
+/// Copia todos los segmentos con fila entre `r0` y `r1` (inclusive).
+pub fn copy_tempo(td: &TimingData, r0: i32, r1: i32) -> TempoClip {
+    let segs = SegKind::ALL
+        .iter()
+        .flat_map(|&k| seg_list(td, k).into_iter().filter(|(r, _)| *r >= r0 && *r <= r1).map(move |(r, v)| (k, r - r0, v)))
+        .collect();
+    TempoClip { span: r1 - r0, segs }
+}
+
+/// Pega los segmentos en `at` (reemplaza los del mismo tipo en la misma fila). Devuelve cuántos.
+pub fn paste_tempo(td: &mut TimingData, clip: &TempoClip, at: i32) -> usize {
+    let mut n = 0;
+    for (k, r, v) in &clip.segs {
+        if at + r >= 0 {
+            seg_set(td, *k, at + r, v.clone());
+            n += 1;
+        }
+    }
+    n
 }
 
 #[cfg(test)]
@@ -1167,19 +1424,118 @@ mod tests {
 
     #[test]
     fn segments() {
+        use SegValue::Num;
         let mut td = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 120.0 }], ..Default::default() };
-        assert_eq!(seg_effective(&td, SegKind::Bpm, 96), 120.0);
-        seg_set(&mut td, SegKind::Bpm, 96, 150.0);
-        seg_set(&mut td, SegKind::Stop, 48, 0.5);
-        seg_set(&mut td, SegKind::Scroll, 0, 2.0);
-        assert_eq!(seg_effective(&td, SegKind::Bpm, 200), 150.0);
-        assert_eq!(seg_effective(&td, SegKind::Scroll, 500), 2.0);
-        assert_eq!(seg_at(&td, SegKind::Stop, 48), Some(0.5));
+        assert_eq!(seg_effective(&td, SegKind::Bpm, 96), Num(120.0));
+        seg_set(&mut td, SegKind::Bpm, 96, Num(150.0));
+        seg_set(&mut td, SegKind::Stop, 48, Num(0.5));
+        seg_set(&mut td, SegKind::Scroll, 0, Num(2.0));
+        assert_eq!(seg_effective(&td, SegKind::Bpm, 200), Num(150.0));
+        assert_eq!(seg_effective(&td, SegKind::Scroll, 500), Num(2.0));
+        assert_eq!(seg_at(&td, SegKind::Stop, 48), Some(Num(0.5)));
         assert!(!seg_can_remove(&td, SegKind::Stop, 47));
+        // Un stop de 0 segundos quita el segmento.
+        seg_set(&mut td, SegKind::Stop, 48, Num(0.0));
+        assert!(td.stops.is_empty());
         assert!(seg_remove(&mut td, SegKind::Bpm, 96));
         // El último BPM no se puede borrar.
         assert!(!seg_remove(&mut td, SegKind::Bpm, 0));
-        seg_set(&mut td, SegKind::Bpm, 0, -5.0);
+        seg_set(&mut td, SegKind::Bpm, 0, Num(-5.0));
         assert!(td.bpms[0].bpm > 0.0);
+    }
+
+    #[test]
+    fn sm5_segments() {
+        use SegValue::*;
+        let mut td = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 120.0 }], ..Default::default() };
+        // Valores por defecto de StepMania 5 cuando no hay segmentos.
+        assert_eq!(seg_effective(&td, SegKind::TimeSig, 100), Pair(4, 4));
+        assert_eq!(seg_effective(&td, SegKind::Ticks, 100), Num(4.0));
+        assert_eq!(seg_effective(&td, SegKind::Combo, 100), Pair(1, 1));
+        assert_eq!(seg_effective(&td, SegKind::Speed, 100), Speed(1.0, 0.0, 0));
+        // Se heredan hasta el próximo segmento.
+        seg_set(&mut td, SegKind::TimeSig, 192, Pair(3, 4));
+        seg_set(&mut td, SegKind::Ticks, 192, Num(2.4));
+        seg_set(&mut td, SegKind::Combo, 192, Pair(0, 3));
+        seg_set(&mut td, SegKind::Speed, 192, Speed(2.0, 1.5, 7));
+        assert_eq!(seg_effective(&td, SegKind::TimeSig, 500), Pair(3, 4));
+        assert_eq!(seg_effective(&td, SegKind::Ticks, 500), Num(2.0));
+        // Combo mínimo 1 y unidad de speed 0 o 1, como en ArrowVortex.
+        assert_eq!(seg_effective(&td, SegKind::Combo, 500), Pair(1, 3));
+        assert_eq!(seg_effective(&td, SegKind::Speed, 500), Speed(2.0, 1.5, 1));
+        // Fake y label sólo existen en su beat; vacíos se quitan.
+        seg_set(&mut td, SegKind::Fake, 96, Num(2.0));
+        assert_eq!(seg_effective(&td, SegKind::Fake, 97), Num(0.0));
+        seg_set(&mut td, SegKind::Label, 48, Label("Coro, parte=2;".into()));
+        assert_eq!(td.labels[0].text, "Coro_ parte_2_");
+        seg_set(&mut td, SegKind::Label, 48, Label("  ".into()));
+        assert!(td.labels.is_empty());
+        assert_eq!(seg_label(SegKind::Speed, 192, &Speed(2.0, 1.5, 1)), "beat     4.000   Speed 2.000x en 1.500 s");
+        assert_eq!(seg_value_text(SegKind::TimeSig, &Pair(3, 4)), "3/4");
+        assert!(seg_remove(&mut td, SegKind::Speed, 192));
+        assert!(td.speeds.is_empty());
+    }
+
+    /// Lo editado se escribe en los tags de StepMania 5 y se vuelve a leer igual.
+    #[test]
+    fn sm5_segments_save_roundtrip() {
+        use crate::simfile::timing as t;
+        use SegValue::*;
+        let mut td = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 120.0 }], ..Default::default() };
+        seg_set(&mut td, SegKind::TimeSig, 0, Pair(7, 8));
+        seg_set(&mut td, SegKind::Ticks, 96, Num(2.0));
+        seg_set(&mut td, SegKind::Combo, 96, Pair(2, 3));
+        seg_set(&mut td, SegKind::Speed, 192, Speed(0.5, 2.25, 1));
+        seg_set(&mut td, SegKind::Fake, 240, Num(1.5));
+        seg_set(&mut td, SegKind::Label, 288, Label("Drop final".into()));
+        assert_eq!(t::parse_time_sigs(&t::write_time_sigs(&td.time_sigs)), td.time_sigs);
+        assert_eq!(t::parse_ticks(&t::write_ticks(&td.tick_counts)), td.tick_counts);
+        assert_eq!(t::parse_combos(&t::write_combos(&td.combos)), td.combos);
+        assert_eq!(t::parse_speeds(&t::write_speeds(&td.speeds)), td.speeds);
+        assert_eq!(t::parse_warps(&t::write_warps(&td.fakes)), td.fakes);
+        assert_eq!(t::parse_labels(&t::write_labels(&td.labels)), td.labels);
+    }
+
+    #[test]
+    fn tempo_tools() {
+        use SegValue::Num;
+        // 120 BPM: un beat = 0.5 s.
+        let base = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 120.0 }], ..Default::default() };
+        let total = |td: &TimingData, row: i32| td.build_table().time_at_row(row);
+
+        // Ctrl+B: BPM iguales al vigente en los extremos; no cambian los tiempos.
+        let mut td = base.clone();
+        seg_set(&mut td, SegKind::Bpm, 192, Num(180.0));
+        let before = total(&td, 400);
+        assert_eq!(add_bounding_bpms(&mut td, &[0, 96, 192, 288]), 2);
+        assert_eq!(td.bpms.iter().map(|s| (s.row, s.bpm)).collect::<Vec<_>>(), vec![(0, 120.0), (96, 120.0), (192, 180.0), (288, 180.0)]);
+        assert!((total(&td, 400) - before).abs() < 1e-9);
+
+        // Región → stop: 2 beats = 1 s de stop en el inicio.
+        let mut td = base.clone();
+        assert!((region_to_stop(&mut td, 96, 192).unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(td.stops.len(), 1);
+        assert_eq!(td.stops[0].row, 96);
+
+        // Región → stutter: medio tiempo de stop, la otra mitad al doble de BPM, y vuelve a 120.
+        let mut td = base.clone();
+        let before = total(&td, 400);
+        let (half, bpm) = region_to_stutter(&mut td, 96, 192).unwrap();
+        assert!((half - 0.5).abs() < 1e-9 && (bpm - 240.0).abs() < 1e-9);
+        assert_eq!(seg_at(&td, SegKind::Bpm, 192), Some(Num(120.0)));
+        assert!((total(&td, 400) - before).abs() < 1e-9, "el stutter no debe desfasar lo que sigue");
+        assert!(region_to_stutter(&mut base.clone(), 10, 11).is_none());
+
+        // Copiar y pegar tempo.
+        let mut td = base.clone();
+        seg_set(&mut td, SegKind::Scroll, 100, Num(2.0));
+        seg_set(&mut td, SegKind::Label, 120, SegValue::Label("drop".into()));
+        seg_set(&mut td, SegKind::Stop, 300, Num(0.25));
+        let clip = copy_tempo(&td, 96, 192);
+        assert_eq!(clip.span, 96);
+        assert_eq!(clip.segs.len(), 2);
+        assert_eq!(paste_tempo(&mut td, &clip, 480), 2);
+        assert_eq!(seg_at(&td, SegKind::Scroll, 484), Some(Num(2.0)));
+        assert_eq!(seg_at(&td, SegKind::Label, 504), Some(SegValue::Label("drop".into())));
     }
 }
