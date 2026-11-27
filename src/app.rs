@@ -1826,6 +1826,8 @@ impl App {
             on!(none, Key::Equals, |a: &mut App| a.zoom(1.2));
             on!(none, Key::Minus, |a: &mut App| a.zoom(1.0 / 1.2));
             on!(none, Key::Slash, |a: &mut App| a.slash_key());
+            // En teclados españoles `/` se escribe con Shift+7.
+            on!(shift, Key::Slash, |a: &mut App| a.slash_key());
             // La tecla bajo Esc (` en inglés, º en español), como "accent" en ArrowVortex.
             on!(none, Key::Backtick, |a: &mut App| a.convert_selection(Convert::HoldsRolls));
             on!(shift, Key::R, |a: &mut App| a.view.reverse = !a.view.reverse);
