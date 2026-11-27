@@ -1,7 +1,15 @@
 # Step Charter
 
-Editor de charts inspirado en ArrowVortex, escrito en Rust y enfocado en **Pump It Up**
-(archivos `.ssc` de StepMania 5 / StepF2 / XSanity).
+Editor de charts para **Pump It Up** (archivos `.ssc` de StepMania 5 / StepF2 / XSanity),
+escrito en Rust y **basado profundamente en [ArrowVortex](https://github.com/uvcat7/ArrowVortex)**.
+
+> **Basado en ArrowVortex.** Step Charter es una reimplementación de ArrowVortex en Rust,
+> enfocada en los modos de pump (5, 6 y 10 flechas, y co-op). Casi todo viene de ArrowVortex:
+> la idea, la interfaz, los menús y diálogos, los atajos de teclado, el comportamiento del
+> editor (vista por tiempo, snaps, selección, espejos, editor de tempo…), los mapeos de
+> estilos, las texturas del noteskin pump y el ícono. Se reescribió en Rust tomando
+> ArrowVortex 1.0.1 como modelo, función por función. Sin ArrowVortex este proyecto no
+> existiría: el mérito del diseño original es de sus autores.
 
 ## Estado actual
 
@@ -126,7 +134,7 @@ leen sus noteskins. Esa carpeta no se sube al repositorio.
 
 ## Créditos
 
-- Inspirado en [ArrowVortex](https://github.com/uvcat7/ArrowVortex). Las texturas del
+- Basado en [ArrowVortex](https://github.com/uvcat7/ArrowVortex) (ver arriba). Las texturas del
   noteskin pump integrado vienen de ArrowVortex 1.0.1, y el ícono de la app es el de
   ArrowVortex recoloreado en naranja (modificado para Step Charter en noviembre de 2026).
 - Los noteskins de XSanity, StepF2, StepMania y demás simuladores pertenecen a sus autores y
