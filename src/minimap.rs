@@ -94,6 +94,17 @@ impl MinimapMap {
     }
 }
 
+/// Eje del minimapa: el rango del chart más lo que la vista muestra antes del cursor (el
+/// espacio sobre los receptores) y después de él. Así, con el recuadro de la vista en el tope
+/// el cursor queda en el inicio del chart, y con el recuadro en el fondo, en el final.
+fn axis_range(range: (f64, f64), view: Option<(f64, f64)>, cursor: f64) -> (f64, f64) {
+    let (lo, hi) = range;
+    let Some((v0, v1)) = view else { return range };
+    // Límite por si la vista es enorme (scrolls casi en 0 en la vista de juego).
+    let max = (hi - lo).max(0.0) * 0.5;
+    (lo - (cursor - v0).clamp(0.0, max), hi + (v1 - cursor).clamp(0.0, max))
+}
+
 fn axis(inp: &MinimapInput, row: i32) -> f64 {
     if inp.time_axis {
         inp.table.time_at_row(row)
@@ -118,10 +129,11 @@ fn density_color(t: f32) -> Color32 {
 
 pub fn draw(painter: &Painter, rect: Rect, inp: &MinimapInput) -> MinimapMap {
     painter.rect_filled(rect, 0.0, Color32::from_rgb(14, 14, 18));
-    let (lo, mut hi) = inp.range;
-    if hi - lo < 1e-6 {
-        hi = lo + 1.0;
+    let (chart_lo, mut chart_hi) = inp.range;
+    if chart_hi - chart_lo < 1e-6 {
+        chart_hi = chart_lo + 1.0;
     }
+    let (lo, hi) = axis_range((chart_lo, chart_hi), inp.view, inp.cursor);
     let inner = rect.shrink2(egui::vec2(4.0, 6.0));
     let panel = inner.height() as f64;
     let scale = inp.scale.unwrap_or(panel / (hi - lo)).max(1e-6);
@@ -152,8 +164,8 @@ pub fn draw(painter: &Painter, rect: Rect, inp: &MinimapInput) -> MinimapMap {
     let lanes_left = inner.center().x - lane_w * num_cols as f32 * 0.5;
     let mark_w = (lane_w * 0.68).max(1.0);
     let lane_cx = |c: usize| lanes_left + (c as f32 + 0.5) * lane_w;
-    let content_top = map.y_of(lo).min(map.y_of(hi)).max(inner.top());
-    let content_bot = map.y_of(lo).max(map.y_of(hi)).min(inner.bottom());
+    let content_top = map.y_of(chart_lo).min(map.y_of(chart_hi)).max(inner.top());
+    let content_bot = map.y_of(chart_lo).max(map.y_of(chart_hi)).min(inner.bottom());
 
     // Fondo tenue de cada carril (sólo donde hay chart, y no en modo densidad).
     for c in (0..num_cols).filter(|_| !inp.density) {
@@ -399,6 +411,29 @@ mod tests {
         let bottom = m.cursor_for_pointer(500.0, view, cursor);
         assert!((top - 1.0).abs() < 1e-9, "{}", top); // vista en 0..3
         assert!((bottom - 298.0).abs() < 1e-9, "{}", bottom); // vista en 297..300
+    }
+
+    #[test]
+    fn pointer_reaches_chart_start_and_end() {
+        // Vista de 3 s con los receptores 1 s después de su inicio: el eje va de -1 (vista con
+        // el cursor en 0) a 302 (vista con el cursor en 300).
+        let view = Some((10.0, 13.0));
+        let (lo, hi) = axis_range((0.0, 300.0), view, 11.0);
+        assert!((lo + 1.0).abs() < 1e-9 && (hi - 302.0).abs() < 1e-9, "{} {}", lo, hi);
+        // Canción larga (se desplaza): el tope y el fondo llevan el cursor al inicio y al final.
+        let m = MinimapMap { lo, hi, ..map(300.0, 10.0, 0.0) };
+        let top = m.cursor_for_pointer(0.0, view, 11.0);
+        let bottom = m.cursor_for_pointer(500.0, view, 11.0);
+        assert!(top.abs() < 1e-9, "tope: {}", top);
+        assert!((bottom - 300.0).abs() < 1e-9, "fondo: {}", bottom);
+        // Canción corta (cabe en el panel): en los bordes el cursor llega al menos al inicio y
+        // al final (después se ajusta a esos límites).
+        let (lo, hi) = axis_range((0.0, 30.0), view, 11.0);
+        let m = MinimapMap { lo, hi, ..map(0.0, 500.0 / (hi - lo), 0.0) };
+        assert!(m.cursor_for_pointer(0.0, view, 11.0) <= 0.0);
+        assert!(m.cursor_for_pointer(500.0, view, 11.0) >= 30.0);
+        // Sin vista, el eje es el del chart.
+        assert_eq!(axis_range((0.0, 300.0), None, 5.0), (0.0, 300.0));
     }
 
     #[test]

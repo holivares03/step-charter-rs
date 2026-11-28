@@ -221,6 +221,7 @@ Propuestas iniciales (se pueden quitar o reordenar):
 - [x] Minimapa que se desplaza con canciones largas (como ArrowVortex) y más legible en singles.
 - [x] Zoom independiente del minimapa en modo notas y densidad.
 - [x] El cursor no baja del compás 0 al navegar.
+- [x] El minimapa llega al tope de arriba y el cursor no pasa del final de la canción.
 - [x] Click en el fondo no mueve el chart (sólo el click sobre las columnas).
 - [x] Holds que relucen al ritmo del BPM.
 - [x] Usar los noteskins de XSanity.
