@@ -9,7 +9,7 @@ use std::time::Instant;
 use egui::{Color32, Event, Key, Modifiers, RichText};
 
 use crate::audio::{self, AudioData, AudioPlayer, Waveform};
-use crate::edit::{self, Clip, Convert, NoteFilter, SegKind, SegValue, Selection, TempoClip};
+use crate::edit::{self, Clip, Convert, NoteFilter, SegKind, SegRef, SegValue, Selection, TempoClip};
 use crate::minimap::{self, MinimapInput};
 use crate::notefield::{self, FieldInput, Layout, ViewSettings};
 use crate::noteskin::{self, ExternalSkin, Noteskin};
@@ -52,12 +52,22 @@ enum TempoAction {
     Offset(f64),
     Set(SegKind, i32, SegValue),
     Remove(SegKind, i32),
+    /// Mover un segmento de una fila a otra (editor de la caja seleccionada).
+    Move(SegKind, i32, i32),
     Tool(TempoTool),
     Jump(i32),
     CreateOwn,
     DropOwn,
     /// Insertar (filas > 0) o borrar (filas < 0) en el cursor; `true` = en todos los charts.
     InsertRows(i32, bool),
+}
+
+/// Rectángulo de selección con el mouse: dónde empezó (beat y x en pantalla) y las cajas de
+/// tempo que ya estaban seleccionadas si se empezó con Shift (se suman).
+struct DragSel {
+    beat: f64,
+    x: f32,
+    base: Vec<SegRef>,
 }
 
 /// Herramientas del menú *Tempo* (también como botones en el editor de tempo).
@@ -71,12 +81,8 @@ enum TempoTool {
     PasteTempo,
 }
 
-/// Una fila del editor de tempo: nombre, editor según el tipo de valor y quitar / heredado.
-fn tempo_seg_row(ui: &mut egui::Ui, td: &TimingData, kind: SegKind, row: i32, actions: &mut Vec<TempoAction>) {
-    let exact = edit::seg_at(td, kind, row);
-    let value = edit::seg_effective(td, kind, row);
-    let name = if exact.is_some() { RichText::new(kind.name()).strong() } else { RichText::new(kind.name()) };
-    ui.label(name).on_hover_text(kind.help());
+/// Editor del valor de un segmento según su tipo. Devuelve el valor nuevo si cambió.
+fn seg_value_editor(ui: &mut egui::Ui, kind: SegKind, value: &SegValue) -> Option<SegValue> {
     let mut new: Option<SegValue> = None;
     ui.horizontal(|ui| match value.clone() {
         SegValue::Num(mut v) => {
@@ -123,6 +129,16 @@ fn tempo_seg_row(ui: &mut egui::Ui, td: &TimingData, kind: SegKind, row: i32, ac
             }
         }
     });
+    new
+}
+
+/// Una fila del editor de tempo: nombre, editor según el tipo de valor y quitar / heredado.
+fn tempo_seg_row(ui: &mut egui::Ui, td: &TimingData, kind: SegKind, row: i32, actions: &mut Vec<TempoAction>) {
+    let exact = edit::seg_at(td, kind, row);
+    let value = edit::seg_effective(td, kind, row);
+    let name = if exact.is_some() { RichText::new(kind.name()).strong() } else { RichText::new(kind.name()) };
+    ui.label(name).on_hover_text(kind.help());
+    let new = seg_value_editor(ui, kind, &value);
     if let Some(v) = new {
         actions.push(TempoAction::Set(kind, row, v));
     }
@@ -167,6 +183,9 @@ pub struct StartOptions {
     pub mirror: Option<String>,
     /// `--tempo`: abre el editor de tempo.
     pub tempo: bool,
+    /// `--select-tempo <tipo|todos>`: selecciona esos cambios de tempo (en la región de
+    /// `--select` o en todo el chart), para pruebas.
+    pub select_tempo: Option<String>,
     /// `--minimap notas|densidad`: modo del minimapa al abrir.
     pub minimap: Option<String>,
     /// `--noteskin <nombre>`: noteskin importado o del simulador a usar ("" = integrado).
@@ -207,6 +226,10 @@ impl StartOptions {
                     i += 1;
                 }
                 "--tempo" => o.tempo = true,
+                "--select-tempo" => {
+                    o.select_tempo = next.cloned();
+                    i += 1;
+                }
                 "--minimap" => {
                     o.minimap = next.cloned();
                     i += 1;
@@ -267,8 +290,10 @@ pub struct App {
     selection: Option<Selection>,
     /// Fila donde empezó una selección con Tab (se cierra con otro Tab).
     sel_anchor: Option<i32>,
-    /// Inicio de una selección con el mouse: (beat, columna).
-    drag_start: Option<(f64, usize)>,
+    /// Selección con el mouse en curso (arrastrando un rectángulo).
+    drag_start: Option<DragSel>,
+    /// Cajas de tempo seleccionadas en el notefield.
+    tempo_sel: Vec<SegRef>,
     clipboard: Option<Clip>,
     tab_presses: u32,
     tab_down: bool,
@@ -423,6 +448,7 @@ impl App {
             selection: None,
             sel_anchor: None,
             drag_start: None,
+            tempo_sel: Vec::new(),
             clipboard: None,
             tab_presses: 0,
             tab_down: false,
@@ -484,6 +510,14 @@ impl App {
                 Some("v") => app.mirror_selection(false, true),
                 Some("hv") => app.mirror_selection(true, true),
                 _ => {}
+            }
+            match start.select_tempo.as_deref() {
+                Some("todos") | Some("all") => app.select_tempo(None),
+                Some(name) => match SegKind::parse(name) {
+                    Some(k) => app.select_tempo(Some(k)),
+                    None => app.msg(format!("--select-tempo: tipo desconocido \"{}\"", name)),
+                },
+                None => {}
             }
         }
         app.show_tempo = start.tempo;
@@ -1127,6 +1161,7 @@ impl App {
         self.selection = None;
         self.sel_anchor = None;
         self.drag_start = None;
+        self.tempo_sel.clear();
     }
 
     fn need_selection(&mut self) -> Option<Selection> {
@@ -1163,6 +1198,7 @@ impl App {
         let name = sel.filter.as_ref().map(|f| f.name()).unwrap_or_default();
         self.sel_anchor = None;
         self.selection = Some(sel);
+        self.tempo_sel.clear();
         self.msg(format!("Seleccionadas {} {}", n, name));
     }
 
@@ -1170,6 +1206,7 @@ impl App {
     fn region_key(&mut self) {
         let cur = self.cursor_row();
         let cols = self.num_cols();
+        self.tempo_sel.clear();
         match self.sel_anchor.take() {
             Some(a) => {
                 let sel = Selection::rows(a, cur, cols);
@@ -1187,6 +1224,55 @@ impl App {
     fn select_all(&mut self) {
         self.sel_anchor = None;
         self.selection = self.whole_chart();
+        self.tempo_sel.clear();
+    }
+
+    /// Ctrl+Shift+A: todas las notas y todos los cambios de tempo.
+    fn select_everything(&mut self) {
+        self.select_all();
+        if let Some(td) = self.timing() {
+            self.tempo_sel = edit::segs_in_range(td, &SegKind::ALL, i32::MIN, i32::MAX);
+        }
+        let n = self.tempo_sel.len();
+        self.msg(format!("Seleccionado todo el chart y {}", Self::count_text(0, n, false)));
+    }
+
+    /// Selecciona cambios de tempo de un tipo (o de todos): dentro de la región actual o, si no
+    /// hay, en todo el chart. Quita la selección de notas, así lo que se haga después (borrar,
+    /// copiar) sólo afecta a esos cambios de tempo.
+    fn select_tempo(&mut self, kind: Option<SegKind>) {
+        let (r0, r1) = self.selection.as_ref().map(|s| (s.r0, s.r1)).unwrap_or((i32::MIN, i32::MAX));
+        let kinds: Vec<SegKind> = match kind {
+            Some(k) => vec![k],
+            None => SegKind::ALL.to_vec(),
+        };
+        let Some(td) = self.timing() else { return };
+        let refs = edit::segs_in_range(td, &kinds, r0, r1);
+        let what = kind.map(|k| k.name().to_string()).unwrap_or_else(|| "todos los tipos".into());
+        if refs.is_empty() {
+            self.msg(format!("No hay cambios de tempo ({}) ahí.", what));
+            return;
+        }
+        let n = refs.len();
+        self.selection = None;
+        self.sel_anchor = None;
+        self.tempo_sel = refs;
+        let verb = if n == 1 { "Seleccionado" } else { "Seleccionados" };
+        self.msg(format!("{} {} ({})", verb, Self::count_text(0, n, false), what));
+    }
+
+    /// Guarda para deshacer lo que va a cambiar: las notas, el timing o, si cambian ambos, la
+    /// canción completa (un solo paso).
+    fn push_undo_for(&mut self, notes: bool, timing: bool) {
+        match (notes, timing) {
+            (true, true) => {
+                if let Some(e) = self.song_snapshot() {
+                    self.push_entry(e);
+                }
+            }
+            (false, true) => self.push_undo_timing(),
+            _ => self.push_undo(),
+        }
     }
 
     /// Selecciona desde el inicio hasta el cursor (`before`) o desde el cursor hasta el final.
@@ -1201,53 +1287,116 @@ impl App {
         let cols = c.num_cols;
         self.sel_anchor = None;
         self.selection = Some(Selection::rows(a, b, cols));
+        self.tempo_sel.clear();
     }
 
+    /// Ctrl+C / Ctrl+X: las notas de la selección y las cajas de tempo seleccionadas.
     fn copy_selection(&mut self, ctx: &egui::Context, cut: bool) {
-        let Some(sel) = self.need_selection() else { return };
-        let Some(chart) = self.chart() else { return };
-        let clip = edit::copy(&chart.notes, &sel);
-        let n = clip.notes.len();
+        let boxes = self.tempo_sel.clone();
+        if boxes.is_empty() && self.need_selection().is_none() {
+            return;
+        }
+        let sel = self.selection.clone();
+        let (Some(chart), Some(td)) = (self.chart(), self.timing()) else { return };
+        // Los cambios de tempo se copian relativos al inicio de la región (o al primero de ellos).
+        let origin = sel.as_ref().map(|s| s.r0).unwrap_or_else(|| boxes.iter().map(|b| b.1).min().unwrap_or(0));
+        let tempo = edit::copy_segs(td, &boxes, origin);
+        let clip = match &sel {
+            Some(s) => Clip { tempo, ..edit::copy(&chart.notes, s) },
+            None => Clip::tempo_only(tempo),
+        };
+        let n_notes = clip.notes.len();
+        let n_tempo = clip.tempo.len();
         ctx.copy_text(clip.to_text());
         self.clipboard = Some(clip);
-        if cut && n > 0 && !self.audio.is_playing() {
-            self.push_undo();
-            if let Some(chart) = self.chart_mut() {
-                edit::delete(&mut chart.notes, &sel);
-            }
-            self.notes_changed();
-            self.msg(format!("Cortadas {} notas", n));
+        let what = Self::count_text(n_notes, n_tempo, sel.is_some());
+        if cut && (n_notes > 0 || n_tempo > 0) && !self.audio.is_playing() {
+            self.remove_selected(sel.as_ref(), &boxes, n_notes > 0);
+            self.msg(format!("Cortado: {}", what));
         } else {
-            self.msg(format!("Copiadas {} notas", n));
+            self.msg(format!("Copiado: {}", what));
         }
     }
 
+    /// "12 notas y 2 cambios de tempo" (sin las notas si `show_notes` es `false`).
+    fn count_text(notes: usize, tempo: usize, show_notes: bool) -> String {
+        let n = if notes == 1 { "1 nota".to_string() } else { format!("{} notas", notes) };
+        let t = if tempo == 1 { "1 cambio de tempo".to_string() } else { format!("{} cambios de tempo", tempo) };
+        match (show_notes, tempo > 0) {
+            (true, true) => format!("{} y {}", n, t),
+            (true, false) => n,
+            (false, _) => t,
+        }
+    }
+
+    /// Borra las notas de `sel` (si `notes`) y los cambios de tempo `boxes`, en un solo paso de
+    /// deshacer. Devuelve (notas borradas, cambios de tempo borrados).
+    fn remove_selected(&mut self, sel: Option<&Selection>, boxes: &[SegRef], notes: bool) -> (usize, usize) {
+        let timing = !boxes.is_empty();
+        self.push_undo_for(notes, timing);
+        let mut n_notes = 0;
+        if notes {
+            if let (Some(sel), Some(chart)) = (sel, self.chart_mut()) {
+                n_notes = edit::delete(&mut chart.notes, sel);
+            }
+        }
+        let n_tempo = match self.edit_timing_mut() {
+            Some(td) if timing => edit::remove_segs(td, boxes),
+            _ => 0,
+        };
+        if n_notes == 0 && n_tempo == 0 {
+            // No cambió nada: se descarta el paso de deshacer.
+            self.undo.pop();
+            return (0, 0);
+        }
+        self.tempo_sel.clear();
+        self.tempo_edit_active = false;
+        self.dirty = true;
+        if n_tempo > 0 {
+            self.after_timing_change();
+        }
+        self.notes_changed();
+        (n_notes, n_tempo)
+    }
+
+    /// Supr: borra las notas de la selección y las cajas de tempo seleccionadas.
     fn delete_selection(&mut self) {
-        let Some(sel) = self.need_selection() else { return };
         if self.audio.is_playing() {
             return;
         }
-        let n = self.chart().map(|c| edit::count_selected(&c.notes, &sel)).unwrap_or(0);
-        if n == 0 {
+        let boxes = self.tempo_sel.clone();
+        if boxes.is_empty() && self.need_selection().is_none() {
             return;
         }
-        self.push_undo();
-        if let Some(chart) = self.chart_mut() {
-            edit::delete(&mut chart.notes, &sel);
+        let sel = self.selection.clone();
+        let n = match (&sel, self.chart()) {
+            (Some(s), Some(c)) => edit::count_selected(&c.notes, s),
+            _ => 0,
+        };
+        if n == 0 && boxes.is_empty() {
+            return;
         }
-        self.notes_changed();
-        self.msg(format!("Borradas {} notas", n));
+        let (n_notes, n_tempo) = self.remove_selected(sel.as_ref(), &boxes, n > 0);
+        if n_notes == 0 && n_tempo == 0 {
+            self.msg("El primer BPM no se puede borrar.");
+            return;
+        }
+        let mut m = format!("Borrado: {}", Self::count_text(n_notes, n_tempo, n_notes > 0 || n_tempo == 0));
+        if n_tempo < boxes.len() {
+            m.push_str(" (el primer BPM no se borra)");
+        }
+        self.msg(m);
     }
 
-    /// Pega en el cursor. `text` es el portapapeles del sistema (si trae notas de
-    /// Step Charter se usa; si no, el portapapeles interno).
+    /// Pega en el cursor. `text` es el portapapeles del sistema (si trae notas o cambios de
+    /// tempo de Step Charter se usa; si no, el portapapeles interno).
     fn paste(&mut self, text: Option<String>) {
         if self.audio.is_playing() {
             return;
         }
         let clip = text.as_deref().and_then(Clip::from_text).or_else(|| self.clipboard.clone());
-        let Some(mut clip) = clip else {
-            self.msg("No hay notas copiadas.");
+        let Some(mut clip) = clip.filter(|c| c.with_notes || !c.tempo.is_empty()) else {
+            self.msg("No hay nada copiado.");
             return;
         };
         let Some(chart) = self.chart() else { return };
@@ -1268,13 +1417,30 @@ impl App {
         }
         let at = self.cursor_row();
         let num_cols = chart.num_cols;
-        self.push_undo();
-        let Some(chart) = self.chart_mut() else { return };
-        let (sel, added) = edit::paste(&mut chart.notes, &clip, at, num_cols);
-        self.selection = Some(sel);
+        let has_tempo = !clip.tempo.is_empty();
+        self.push_undo_for(clip.with_notes, has_tempo);
+        let mut added = 0;
+        if clip.with_notes {
+            let Some(chart) = self.chart_mut() else { return };
+            let (sel, n) = edit::paste(&mut chart.notes, &clip, at, num_cols);
+            added = n;
+            self.selection = Some(sel);
+        } else {
+            self.selection = None;
+        }
         self.sel_anchor = None;
+        self.tempo_sel.clear();
+        if has_tempo {
+            if let Some(td) = self.edit_timing_mut() {
+                self.tempo_sel = edit::paste_segs(td, &clip.tempo, at);
+            }
+            self.tempo_edit_active = false;
+            self.dirty = true;
+            self.after_timing_change();
+        }
         self.notes_changed();
-        self.msg(format!("Pegadas {} notas", added));
+        let n_tempo = self.tempo_sel.len();
+        self.msg(format!("Pegado: {}", Self::count_text(added, n_tempo, clip.with_notes)));
     }
 
     /// Códigos de los menús de selección por tipo: 0..8 tipos, 50+p jugador, 100+q cuantización.
@@ -1571,6 +1737,13 @@ impl App {
     fn after_timing_change(&mut self) {
         let beat = self.cursor_beat;
         let playing = self.audio.is_playing();
+        if !self.tempo_sel.is_empty() {
+            let mut sel = std::mem::take(&mut self.tempo_sel);
+            if let Some(td) = self.timing() {
+                sel.retain(|&(k, r)| edit::seg_exists(td, k, r));
+                self.tempo_sel = sel;
+            }
+        }
         self.rebuild_timing();
         self.set_cursor_beat(beat);
         if playing {
@@ -1605,6 +1778,39 @@ impl App {
                     song.charts[idx].timing = new;
                     self.tempo_edit_active = true;
                     changed = true;
+                }
+                TempoAction::Move(k, from, to) => {
+                    let Some(td) = self.timing() else { continue };
+                    let mut probe = td.clone();
+                    match edit::seg_move(&mut probe, k, from, to) {
+                        Ok(()) if from != to => {
+                            if !self.tempo_edit_active {
+                                self.push_undo_timing();
+                                self.tempo_edit_active = true;
+                            }
+                            if let Some(td) = self.edit_timing_mut() {
+                                *td = probe;
+                            }
+                            for s in self.tempo_sel.iter_mut().filter(|s| **s == (k, from)) {
+                                s.1 = to;
+                            }
+                            changed = true;
+                            // Si quedó fuera de la pantalla, el cursor la sigue (y con él su editor).
+                            let visible = self.layout.as_ref().map(|l| l.visible_beats(&self.table));
+                            if let Some((b0, b1)) = visible {
+                                let b = row_to_beat(to);
+                                if b < b0 || b > b1 {
+                                    self.jump_to_row(to);
+                                }
+                            }
+                        }
+                        Ok(()) => {}
+                        Err(m) => {
+                            if self.messages.last().map(|(_, t)| t != &m).unwrap_or(true) {
+                                self.msg(m);
+                            }
+                        }
+                    }
                 }
                 TempoAction::Offset(_) | TempoAction::Set(..) | TempoAction::Remove(..) => {
                     if !self.tempo_edit_active {
@@ -2013,6 +2219,7 @@ impl App {
             on!(none, Key::Escape, |a: &mut App| a.clear_selection());
             on!(none, Key::Delete, |a: &mut App| a.delete_selection());
             on!(none, Key::Backspace, |a: &mut App| a.delete_selection());
+            on!(ctrl_shift, Key::A, |a: &mut App| a.select_everything());
             on!(ctrl, Key::A, |a: &mut App| a.select_all());
             on!(ctrl, Key::Home, |a: &mut App| {
                 if let Some(sel) = a.need_selection() {
@@ -2139,32 +2346,89 @@ impl App {
                 self.move_snap(steps * dir);
             }
         }
-        // Arrastrar: selección rectangular (filas × columnas).
+        // Caja de tempo bajo el mouse: cursor de mano y ayuda (como el *tempo help* de ArrowVortex).
+        let box_at = |pos: egui::Pos2| layout.boxes.iter().rev().find(|b| b.rect.contains(pos)).map(|b| (b.kind, b.row));
+        let pointer_down = ui.input(|i| i.pointer.any_down());
+        if let Some((kind, row)) = response.hover_pos().and_then(box_at) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            if !pointer_down && self.drag_start.is_none() {
+                let value = self.timing().and_then(|td| edit::seg_at(td, kind, row));
+                if let Some(value) = value {
+                    response.clone().on_hover_ui_at_pointer(|ui| {
+                        ui.label(RichText::new(format!("{} {}", kind.name(), edit::seg_value_text(kind, &value))).strong().color(notefield::seg_color(kind)));
+                        ui.label(format!("Beat {:.3}", row_to_beat(row)));
+                        ui.weak(kind.help());
+                        ui.small("Clic: editar · Shift+clic: sumar o quitar de la selección");
+                    });
+                }
+            }
+        }
+
+        // Arrastrar: rectángulo que selecciona notas (filas × columnas) y cajas de tempo.
         if response.drag_started_by(egui::PointerButton::Primary) {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let beat = layout.beat_at_y(&self.table, pos.y);
-                self.drag_start = Some((beat, layout.col_at_x_clamped(pos.x)));
+            let start = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos());
+            if let Some(pos) = start {
+                let shift = ui.input(|i| i.modifiers.shift);
+                let base = if shift { self.tempo_sel.clone() } else { Vec::new() };
+                self.drag_start = Some(DragSel { beat: layout.beat_at_y(&self.table, pos.y), x: pos.x, base });
                 self.sel_anchor = None;
             }
         }
-        if let (Some((b0, c0)), true) = (self.drag_start, response.dragged_by(egui::PointerButton::Primary)) {
+        if let (Some(d), true) = (&self.drag_start, response.dragged_by(egui::PointerButton::Primary)) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let b1 = layout.beat_at_y(&self.table, pos.y);
-                let c1 = layout.col_at_x_clamped(pos.x);
-                let (lo, hi) = (b0.min(b1), b0.max(b1));
+                let (lo, hi) = (d.beat.min(b1), d.beat.max(b1));
                 let r0 = (lo * ROWS_PER_BEAT as f64 - 1e-6).ceil() as i32;
                 let r1 = (hi * ROWS_PER_BEAT as f64 + 1e-6).floor() as i32;
-                self.selection = if r1 >= r0 { Some(Selection::new(r0, r1, c0, c1)) } else { None };
+                let (x0, x1) = (d.x.min(pos.x), d.x.max(pos.x));
+                // Notas: sólo si el rectángulo toca las columnas.
+                let touches_field = x1 >= layout.left && x0 <= layout.right();
+                let (c0, c1) = (layout.col_at_x_clamped(x0), layout.col_at_x_clamped(x1));
+                // Cajas de tempo: las que el rectángulo toca en pantalla.
+                let y0 = layout.y_of_row(&self.table, beat_to_row(d.beat));
+                let area = egui::Rect::from_two_pos(egui::pos2(x0, y0), egui::pos2(x1, pos.y));
+                let mut boxes = d.base.clone();
+                for b in layout.boxes.iter().filter(|b| b.rect.intersects(area)) {
+                    if !boxes.contains(&(b.kind, b.row)) {
+                        boxes.push((b.kind, b.row));
+                    }
+                }
+                self.selection = if touches_field && r1 >= r0 { Some(Selection::new(r0, r1, c0, c1)) } else { None };
+                self.tempo_sel = boxes;
+                ui.painter().rect(
+                    area,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(130, 190, 255, 20),
+                    egui::Stroke::new(1.0f32, Color32::from_rgb(130, 190, 255)),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
         if response.drag_stopped() {
             self.drag_start = None;
         }
 
-        // Click sobre el notefield: mover el cursor (con Shift, seleccionar desde el
-        // cursor hasta ahí). Un click en el fondo, fuera de las columnas, sólo quita la selección.
+        // Click sobre una caja de tempo: seleccionarla (con Shift, sumarla o quitarla).
+        // Sobre el notefield: mover el cursor (con Shift, seleccionar desde el cursor hasta
+        // ahí). Un click en el fondo, fuera de las columnas, sólo quita la selección.
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
+                let shift = ui.input(|i| i.modifiers.shift);
+                if let Some(b) = box_at(pos) {
+                    if shift {
+                        match self.tempo_sel.iter().position(|s| *s == b) {
+                            Some(i) => {
+                                self.tempo_sel.remove(i);
+                            }
+                            None => self.tempo_sel.push(b),
+                        }
+                    } else {
+                        self.selection = None;
+                        self.sel_anchor = None;
+                        self.tempo_sel = vec![b];
+                    }
+                    return;
+                }
                 let margin = 12.0;
                 if pos.x < layout.left - margin || pos.x > layout.right() + margin {
                     self.clear_selection();
@@ -2173,7 +2437,7 @@ impl App {
                 let beat = layout.beat_at_y(&self.table, pos.y);
                 let step = self.snap_rows();
                 let row = ((beat * ROWS_PER_BEAT as f64) / step as f64).round() as i32 * step;
-                if ui.input(|i| i.modifiers.shift) {
+                if shift {
                     let cur = self.cursor_row();
                     self.selection = Some(Selection::rows(cur, row, self.num_cols()));
                     self.sel_anchor = None;
@@ -2183,6 +2447,69 @@ impl App {
                 self.jump_to_row(row);
             }
         }
+    }
+
+    /// Editor junto a la caja de tempo seleccionada (cuando hay sólo una y ninguna nota
+    /// seleccionada): valor, beat, borrar e ir al beat.
+    fn tempo_box_editor(&mut self, ctx: &egui::Context) {
+        let mut actions: Vec<TempoAction> = Vec::new();
+        let target = match (&self.selection, self.tempo_sel.as_slice(), &self.drag_start) {
+            (None, [one], None) => Some(*one),
+            _ => None,
+        };
+        let rect = target.and_then(|(k, r)| self.layout.as_ref()?.boxes.iter().find(|b| b.kind == k && b.row == r).map(|b| b.rect));
+        if let (Some((kind, row)), Some(rect), Some(td)) = (target, rect, self.timing()) {
+            if let Some(value) = edit::seg_at(td, kind, row) {
+                let (pivot, pos) = if kind.left_side() {
+                    (egui::Align2::RIGHT_TOP, rect.right_bottom() + egui::vec2(0.0, 6.0))
+                } else {
+                    (egui::Align2::LEFT_TOP, rect.left_bottom() + egui::vec2(0.0, 6.0))
+                };
+                // Sólo el primer BPM no se puede borrar ni mover.
+                let can_remove = edit::seg_can_remove(td, kind, row);
+                egui::Area::new(egui::Id::new("tempo_box_editor"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(pos)
+                    .pivot(pivot)
+                    .constrain(true)
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(kind.name()).strong().color(notefield::seg_color(kind))).on_hover_text(kind.help());
+                                if let Some(v) = seg_value_editor(ui, kind, &value) {
+                                    actions.push(TempoAction::Set(kind, row, v));
+                                }
+                                if matches!(kind, SegKind::Bpm | SegKind::Scroll) {
+                                    let v = value.num();
+                                    if ui.small_button("×2").on_hover_text("Doblar").clicked() {
+                                        actions.push(TempoAction::Set(kind, row, SegValue::Num(v * 2.0)));
+                                    }
+                                    if ui.small_button("÷2").on_hover_text("Mitad").clicked() {
+                                        actions.push(TempoAction::Set(kind, row, SegValue::Num(v / 2.0)));
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Beat");
+                                let mut beat = row_to_beat(row);
+                                let dv = egui::DragValue::new(&mut beat).speed(0.05).range(0.0..=100000.0).fixed_decimals(3);
+                                let tip = if can_remove { "Mover este cambio de tempo a otro beat" } else { "El primer BPM no se puede mover" };
+                                if ui.add_enabled(can_remove, dv).on_hover_text(tip).on_disabled_hover_text(tip).changed() {
+                                    actions.push(TempoAction::Move(kind, row, beat_to_row(beat)));
+                                }
+                                if ui.small_button("Ir").on_hover_text("Llevar el cursor a este beat").clicked() {
+                                    actions.push(TempoAction::Jump(row));
+                                }
+                                let tip = if can_remove { "Borrar este cambio de tempo (Supr)" } else { "El primer BPM no se puede borrar" };
+                                if ui.add_enabled(can_remove, egui::Button::new("Borrar").small()).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+                                    actions.push(TempoAction::Remove(kind, row));
+                                }
+                            });
+                        });
+                    });
+            }
+        }
+        self.apply_tempo_actions(ctx, actions);
     }
 
     // ------------------------------------------------------------------
@@ -2253,11 +2580,12 @@ impl App {
                     }
                     ui.separator();
                     let has_sel = self.selection.is_some();
-                    if ui.add_enabled(has_sel, egui::Button::new("Cortar").shortcut_text("Ctrl+X")).clicked() {
+                    let has_any = has_sel || !self.tempo_sel.is_empty();
+                    if ui.add_enabled(has_any, egui::Button::new("Cortar").shortcut_text("Ctrl+X")).clicked() {
                         ui.close_menu();
                         self.copy_selection(ctx, true);
                     }
-                    if ui.add_enabled(has_sel, egui::Button::new("Copiar").shortcut_text("Ctrl+C")).clicked() {
+                    if ui.add_enabled(has_any, egui::Button::new("Copiar").shortcut_text("Ctrl+C")).clicked() {
                         ui.close_menu();
                         self.copy_selection(ctx, false);
                     }
@@ -2265,7 +2593,7 @@ impl App {
                         ui.close_menu();
                         self.paste(None);
                     }
-                    if ui.add_enabled(has_sel, egui::Button::new("Borrar selección").shortcut_text("Supr")).clicked() {
+                    if ui.add_enabled(has_any, egui::Button::new("Borrar selección").shortcut_text("Supr")).clicked() {
                         ui.close_menu();
                         self.delete_selection();
                     }
@@ -2277,6 +2605,10 @@ impl App {
                     if ui.add(egui::Button::new("Seleccionar todo").shortcut_text("Ctrl+A")).clicked() {
                         ui.close_menu();
                         self.select_all();
+                    }
+                    if ui.add(egui::Button::new("Seleccionar todo y el tempo").shortcut_text("Ctrl+Shift+A")).clicked() {
+                        ui.close_menu();
+                        self.select_everything();
                     }
                     if ui.add(egui::Button::new("Seleccionar antes del cursor").shortcut_text("Shift+Inicio")).clicked() {
                         ui.close_menu();
@@ -2316,7 +2648,24 @@ impl App {
                             self.select_by_code(code);
                         }
                     });
-                    if ui.add_enabled(has_sel, egui::Button::new("Quitar selección").shortcut_text("Esc")).clicked() {
+                    ui.menu_button("Seleccionar cambios de tempo", |ui| {
+                        ui.weak(if has_sel { "Dentro de la región actual" } else { "En todo el chart" });
+                        let mut pick: Option<Option<SegKind>> = None;
+                        if ui.button("Todos").clicked() {
+                            pick = Some(None);
+                        }
+                        ui.separator();
+                        for kind in SegKind::ALL {
+                            if ui.button(RichText::new(kind.name()).color(notefield::seg_color(kind))).on_hover_text(kind.help()).clicked() {
+                                pick = Some(Some(kind));
+                            }
+                        }
+                        if let Some(kind) = pick {
+                            ui.close_menu();
+                            self.select_tempo(kind);
+                        }
+                    });
+                    if ui.add_enabled(has_any, egui::Button::new("Quitar selección").shortcut_text("Esc")).clicked() {
                         ui.close_menu();
                         self.clear_selection();
                     }
@@ -2845,6 +3194,11 @@ impl App {
                     );
                     ui.colored_label(Color32::from_rgb(130, 190, 255), txt);
                 }
+                if !self.tempo_sel.is_empty() {
+                    sep(ui);
+                    let txt = format!("{} seleccionado{}", Self::count_text(0, self.tempo_sel.len(), false), if self.tempo_sel.len() == 1 { "" } else { "s" });
+                    ui.colored_label(Color32::from_rgb(130, 190, 255), txt).on_hover_text("Supr borra · Ctrl+C copia · Esc quita la selección");
+                }
                 if self.dirty {
                     sep(ui);
                     ui.colored_label(Color32::from_rgb(240, 180, 80), "● sin guardar");
@@ -3012,6 +3366,8 @@ impl App {
                 selection: self.selection.as_ref(),
                 ext: self.ext_skin.as_deref(),
                 player_skins: &self.player_skins,
+                tempo_sel: &self.tempo_sel,
+                hover: response.hover_pos(),
             };
             let layout = notefield::draw(&painter, rect, &input);
             self.handle_field_mouse(ui, &response, &layout);
@@ -3052,13 +3408,16 @@ impl App {
                     ("/", "Co-op: jugador de las notas nuevas o, con selección, pasarla al siguiente"),
                     ("Ctrl+Z / Ctrl+Y", "Deshacer / rehacer"),
                     ("Tab", "Empezar / cerrar una región en el cursor"),
-                    ("Arrastrar con el mouse", "Selección rectangular (filas y columnas)"),
+                    ("Arrastrar con el mouse", "Selección rectangular (notas y cajas de tempo); con Shift suma cajas"),
                     ("Shift+click", "Seleccionar desde el cursor hasta ahí"),
+                    ("Click en una caja de tempo", "Seleccionarla y editarla (valor, beat, borrar)"),
+                    ("Shift+click en una caja", "Sumarla o quitarla de la selección"),
                     ("Ctrl+A / Esc", "Seleccionar todo / quitar selección"),
+                    ("Ctrl+Shift+A", "Seleccionar todo, también los cambios de tempo"),
                     ("Shift+Inicio / Shift+Fin", "Seleccionar antes / después del cursor"),
                     ("Ctrl+Inicio / Ctrl+Fin", "Ir al inicio / final de la selección"),
-                    ("Ctrl+C / Ctrl+X / Ctrl+V", "Copiar / cortar / pegar en el cursor"),
-                    ("Supr", "Borrar la selección"),
+                    ("Ctrl+C / Ctrl+X / Ctrl+V", "Copiar / cortar / pegar en el cursor (notas y cajas de tempo)"),
+                    ("Supr", "Borrar la selección (notas y cajas de tempo)"),
                     ("Y / T / G", "Espejo horizontal / vertical / completo"),
                     ("º (tecla bajo Esc)", "Holds ↔ rolls en la selección"),
                     ("Shift+T (o Shift+S)", "Editor de tempo y sincronía"),
@@ -3168,6 +3527,7 @@ impl eframe::App for App {
         self.side_panel(ctx);
         self.minimap_panel(ctx);
         self.central(ctx);
+        self.tempo_box_editor(ctx);
         self.tempo_window(ctx);
         self.song_props_window(ctx);
         self.chart_props_window(ctx);

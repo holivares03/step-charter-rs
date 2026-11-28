@@ -4,7 +4,7 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Mesh, Painter, Pos2, Rect, Strok
 use serde::{Deserialize, Serialize};
 
 use crate::audio::Waveform;
-use crate::edit::Selection;
+use crate::edit::{SegKind, SegRef, Selection};
 use crate::noteskin::{self, draw_sheet, draw_sheet_body, draw_sprite, pump_sprite, ExternalSkin, Noteskin};
 use crate::simfile::notes::{Note, NoteKind};
 use crate::simfile::style::{Arrow, Game, PlayerMode};
@@ -144,6 +144,18 @@ pub struct FieldInput<'a> {
     pub ext: Option<&'a ExternalSkin>,
     /// Noteskins por jugador en co-op (P1 = índice 0).
     pub player_skins: &'a [std::sync::Arc<ExternalSkin>],
+    /// Cajas de tempo seleccionadas.
+    pub tempo_sel: &'a [SegRef],
+    /// Posición del mouse (para resaltar la caja de tempo bajo él).
+    pub hover: Option<Pos2>,
+}
+
+/// Caja de un cambio de tempo dibujada a un lado del notefield.
+#[derive(Clone, Debug)]
+pub struct TempoBox {
+    pub kind: SegKind,
+    pub row: i32,
+    pub rect: Rect,
 }
 
 /// Estado de la animación sincronizada con el beat.
@@ -173,6 +185,8 @@ pub struct Layout {
     pub scroll: Option<std::sync::Arc<ScrollMap>>,
     /// Multiplicador de #SPEEDS en la posición actual (1 fuera de la vista de juego).
     pub speed: f64,
+    /// Cajas de tempo visibles, con su rectángulo en pantalla (para seleccionarlas con el mouse).
+    pub boxes: Vec<TempoBox>,
     cursor_pos: f64,
 }
 
@@ -214,6 +228,7 @@ impl Layout {
             cursor_beat,
             scroll,
             speed,
+            boxes: Vec::new(),
             cursor_pos,
         }
     }
@@ -296,22 +311,12 @@ fn with_alpha(c: Color32, a: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * a.clamp(0.0, 1.0)) as u8)
 }
 
-fn text_box(painter: &Painter, pos: Pos2, align: Align2, text: &str, color: Color32, font: &FontId) -> Rect {
-    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
-    let size = galley.size() + vec2(8.0, 2.0);
-    let rect = align.anchor_size(pos, size);
-    painter.rect_filled(rect, 3.0, with_alpha(Color32::from_rgb(20, 20, 24), 0.85));
-    painter.rect_stroke(rect, 3.0, Stroke::new(1.0f32, color), egui::StrokeKind::Inside);
-    painter.galley(rect.min + vec2(4.0, 1.0), galley, color);
-    rect
-}
-
 pub fn draw(painter: &Painter, rect: Rect, inp: &FieldInput) -> Layout {
     let chart = inp.chart;
     let view = inp.view;
     let pump = chart.style.game == Game::Pump;
     let num_cols = chart.num_cols.max(1);
-    let lay = Layout::new(rect, num_cols, view, pump, inp.cursor_time, inp.cursor_beat, inp.scroll.clone());
+    let mut lay = Layout::new(rect, num_cols, view, pump, inp.cursor_time, inp.cursor_beat, inp.scroll.clone());
     let table = inp.table;
     let scale = view.note_scale;
     let note_size = 64.0 * scale;
@@ -443,7 +448,7 @@ pub fn draw(painter: &Painter, rect: Rect, inp: &FieldInput) -> Layout {
 
     // --- Segmentos de tempo --------------------------------------------------
     if view.show_tempo {
-        draw_tempo(painter, &lay, table, inp.timing, row_min, row_max, &small_font);
+        lay.boxes = draw_tempo(painter, &lay, table, inp, row_min, row_max, &small_font);
     }
 
     // --- Receptores ----------------------------------------------------------
@@ -890,64 +895,116 @@ fn draw_gimmick_zones(painter: &Painter, lay: &Layout, table: &TimingTable, td: 
     }
 }
 
-fn draw_tempo(painter: &Painter, lay: &Layout, table: &TimingTable, td: &TimingData, row_min: i32, row_max: i32, font: &FontId) {
+/// Color de la caja de cada tipo de cambio de tempo.
+pub fn seg_color(kind: SegKind) -> Color32 {
+    match kind {
+        SegKind::Bpm => Color32::from_rgb(110, 220, 110),
+        SegKind::Stop => STOP_COLOR,
+        SegKind::Delay => DELAY_COLOR,
+        SegKind::Warp => WARP_COLOR,
+        SegKind::TimeSig => Color32::from_rgb(230, 230, 230),
+        SegKind::Ticks => Color32::from_rgb(150, 190, 240),
+        SegKind::Combo => Color32::from_rgb(240, 200, 120),
+        SegKind::Speed => SPEED_COLOR,
+        SegKind::Scroll => Color32::from_rgb(90, 230, 200),
+        SegKind::Fake => FAKE_COLOR,
+        SegKind::Label => Color32::from_rgb(240, 230, 110),
+    }
+}
+
+/// Dibuja las cajas de los cambios de tempo visibles y devuelve su posición en pantalla.
+fn draw_tempo(painter: &Painter, lay: &Layout, table: &TimingTable, inp: &FieldInput, row_min: i32, row_max: i32, font: &FontId) -> Vec<TempoBox> {
+    let td = inp.timing;
     // Columnas a la izquierda (BPM, stops, ...) y a la derecha (speeds, scrolls, ...).
-    let mut left: Vec<(i32, String, Color32)> = Vec::new();
-    let mut right: Vec<(i32, String, Color32)> = Vec::new();
+    let mut left: Vec<(i32, SegKind, String)> = Vec::new();
+    let mut right: Vec<(i32, SegKind, String)> = Vec::new();
     let in_range = |r: i32| r >= row_min && r <= row_max;
+    let mut add = |row: i32, kind: SegKind, text: String| {
+        if kind.left_side() {
+            left.push((row, kind, text));
+        } else {
+            right.push((row, kind, text));
+        }
+    };
     for s in td.bpms.iter().filter(|s| in_range(s.row)) {
-        left.push((s.row, format!("{:.3}", s.bpm), Color32::from_rgb(110, 220, 110)));
+        add(s.row, SegKind::Bpm, format!("{:.3}", s.bpm));
     }
     for s in td.stops.iter().filter(|s| in_range(s.row)) {
-        left.push((s.row, format!("Stop {:.3}", s.seconds), STOP_COLOR));
+        add(s.row, SegKind::Stop, format!("Stop {:.3}", s.seconds));
     }
     for s in td.delays.iter().filter(|s| in_range(s.row)) {
-        left.push((s.row, format!("Delay {:.3}", s.seconds), DELAY_COLOR));
+        add(s.row, SegKind::Delay, format!("Delay {:.3}", s.seconds));
     }
     for s in td.warps.iter().filter(|s| in_range(s.row)) {
-        left.push((s.row, format!("Warp {:.3}", s.beats), WARP_COLOR));
+        add(s.row, SegKind::Warp, format!("Warp {:.3}", s.beats));
     }
     for s in td.time_sigs.iter().filter(|s| in_range(s.row)) {
-        left.push((s.row, format!("{}/{}", s.num, s.den), Color32::from_rgb(230, 230, 230)));
+        add(s.row, SegKind::TimeSig, format!("{}/{}", s.num, s.den));
     }
     for s in td.tick_counts.iter().filter(|s| in_range(s.row)) {
-        left.push((s.row, format!("Ticks {}", s.ticks), Color32::from_rgb(150, 190, 240)));
+        add(s.row, SegKind::Ticks, format!("Ticks {}", s.ticks));
     }
     for s in td.combos.iter().filter(|s| in_range(s.row)) {
         let t = if s.hit == s.miss { format!("x{}", s.hit) } else { format!("x{}/{}", s.hit, s.miss) };
-        left.push((s.row, t, Color32::from_rgb(240, 200, 120)));
+        add(s.row, SegKind::Combo, t);
     }
     for s in td.speeds.iter().filter(|s| in_range(s.row)) {
         let unit = if s.unit == 1 { "s" } else { "b" };
-        right.push((s.row, format!("Speed {:.2}x {:.2}{}", s.ratio, s.duration, unit), SPEED_COLOR));
+        add(s.row, SegKind::Speed, format!("Speed {:.2}x {:.2}{}", s.ratio, s.duration, unit));
     }
     for s in td.scrolls.iter().filter(|s| in_range(s.row)) {
-        right.push((s.row, format!("Scroll {:.2}x", s.ratio), Color32::from_rgb(90, 230, 200)));
+        add(s.row, SegKind::Scroll, format!("Scroll {:.2}x", s.ratio));
     }
     for s in td.fakes.iter().filter(|s| in_range(s.row)) {
-        right.push((s.row, format!("Fake {:.3}", s.beats), FAKE_COLOR));
+        add(s.row, SegKind::Fake, format!("Fake {:.3}", s.beats));
     }
     for s in td.labels.iter().filter(|s| in_range(s.row)) {
-        right.push((s.row, s.text.clone(), Color32::from_rgb(240, 230, 110)));
+        add(s.row, SegKind::Label, s.text.clone());
     }
 
     // Etiquetas en la misma fila se apilan horizontalmente.
-    let place = |items: Vec<(i32, String, Color32)>, is_left: bool| {
+    let mut boxes = Vec::new();
+    let mut place = |items: Vec<(i32, SegKind, String)>, is_left: bool| {
         let mut last_row = i32::MIN;
         let mut x = 0.0;
-        for (row, text, color) in items {
+        for (row, kind, text) in items {
             let y = lay.y_of_row(table, row);
             if row != last_row {
                 x = if is_left { lay.left - 34.0 } else { lay.right() + 12.0 };
                 last_row = row;
             }
             let align = if is_left { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
-            let r = text_box(painter, pos2(x, y), align, &text, color, font);
+            let selected = inp.tempo_sel.contains(&(kind, row));
+            let r = tempo_box(painter, pos2(x, y), align, &text, seg_color(kind), font, selected, inp.hover);
             x = if is_left { r.left() - 4.0 } else { r.right() + 4.0 };
+            boxes.push(TempoBox { kind, row, rect: r });
         }
     };
     left.sort_by_key(|i| i.0);
     right.sort_by_key(|i| i.0);
     place(left, true);
     place(right, false);
+    boxes
+}
+
+/// Caja de un cambio de tempo: seleccionada (relleno de su color y borde blanco) o con el
+/// mouse encima (borde más grueso).
+#[allow(clippy::too_many_arguments)]
+fn tempo_box(painter: &Painter, pos: Pos2, align: Align2, text: &str, color: Color32, font: &FontId, selected: bool, hover: Option<Pos2>) -> Rect {
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+    let size = galley.size() + vec2(8.0, 2.0);
+    let rect = align.anchor_size(pos, size);
+    let hovered = hover.map(|p| rect.contains(p)).unwrap_or(false);
+    if selected {
+        let fill = Color32::from_rgb(color.r() / 2, color.g() / 2, color.b() / 2);
+        painter.rect_filled(rect.expand(1.0), 3.0, fill);
+        painter.rect_stroke(rect.expand(1.0), 3.0, Stroke::new(2.0f32, Color32::WHITE), egui::StrokeKind::Outside);
+        painter.galley(rect.min + vec2(4.0, 1.0), galley, Color32::WHITE);
+    } else {
+        let fill = if hovered { Color32::from_rgb(45, 45, 52) } else { with_alpha(Color32::from_rgb(20, 20, 24), 0.85) };
+        painter.rect_filled(rect, 3.0, fill);
+        painter.rect_stroke(rect, 3.0, Stroke::new(if hovered { 2.0f32 } else { 1.0 }, color), egui::StrokeKind::Inside);
+        painter.galley(rect.min + vec2(4.0, 1.0), galley, color);
+    }
+    rect
 }
