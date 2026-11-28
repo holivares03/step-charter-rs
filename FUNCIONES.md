@@ -99,7 +99,7 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Inicio / fin de la selección | ✅ | Ctrl+Inicio / Ctrl+Fin |
 | Cambiar el snap (← →) | ✅ | |
 | Snap personalizado (p. ej. 20avos) y fijar/restablecer snap | ❌ | |
-| Click para mover el cursor | ✅ | |
+| Click para mover el cursor | ✅ | Clic del medio, como en ArrowVortex (el izquierdo sólo selecciona) |
 | Saltar a la siguiente nota (jump to next note) | ❌ | |
 
 ## 7. Edición de notas
@@ -224,6 +224,7 @@ Propuestas iniciales (se pueden quitar o reordenar):
 - [x] El cursor no baja del compás 0 al navegar.
 - [x] El minimapa llega al tope de arriba y el cursor no pasa del final de la canción.
 - [x] Click en el fondo no mueve el chart (sólo el click sobre las columnas).
+- [x] Como en ArrowVortex: el clic izquierdo no mueve el cursor (sólo selecciona o quita la selección); el clic del medio lo lleva a esa fila.
 - [x] Holds que relucen al ritmo del BPM.
 - [x] Usar los noteskins de XSanity.
 - [x] No distribuir noteskins de terceros: botón para importarlos del simulador que tenga el usuario.

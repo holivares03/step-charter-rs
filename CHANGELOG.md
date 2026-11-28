@@ -29,6 +29,9 @@ Todos los cambios importantes de Step Charter. El formato sigue
   el único).
 - Arrastrar un rectángulo que sólo pasa por fuera de las columnas ya no selecciona notas de
   la columna más cercana.
+- Como en ArrowVortex, el clic izquierdo en el chart ya no mueve el cursor: sólo quita la
+  selección (o, con Shift, selecciona desde el cursor hasta ahí). El cursor se lleva a una
+  fila con el clic del medio (la rueda).
 
 ### Arreglado
 - Arrastrando en el minimapa hasta el tope o hasta el fondo, el cursor no llegaba al beat 0 ni
