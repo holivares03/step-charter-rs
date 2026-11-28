@@ -2417,9 +2417,24 @@ impl App {
             self.drag_start = None;
         }
 
-        // Click sobre una caja de tempo: seleccionarla (con Shift, sumarla o quitarla).
-        // Sobre el notefield: mover el cursor (con Shift, seleccionar desde el cursor hasta
-        // ahí). Un click en el fondo, fuera de las columnas, sólo quita la selección.
+        // Fila del snap más cercana a una posición del mouse.
+        let snapped_row = |app: &App, y: f32| {
+            let beat = layout.beat_at_y(&app.table, y);
+            let step = app.snap_rows();
+            ((beat * ROWS_PER_BEAT as f64) / step as f64).round() as i32 * step
+        };
+
+        // Clic del medio: llevar el cursor a esa fila (como en ArrowVortex).
+        if response.middle_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let row = snapped_row(self, pos.y);
+                self.jump_to_row(row);
+            }
+        }
+
+        // Clic izquierdo, como en ArrowVortex: sobre una caja de tempo la selecciona (con
+        // Shift, la suma o la quita); en otro lugar quita la selección, sin mover el cursor.
+        // Shift+clic sobre las columnas selecciona desde el cursor hasta ahí.
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let shift = ui.input(|i| i.modifiers.shift);
@@ -2439,21 +2454,15 @@ impl App {
                     return;
                 }
                 let margin = 12.0;
-                if pos.x < layout.left - margin || pos.x > layout.right() + margin {
-                    self.clear_selection();
-                    return;
-                }
-                let beat = layout.beat_at_y(&self.table, pos.y);
-                let step = self.snap_rows();
-                let row = ((beat * ROWS_PER_BEAT as f64) / step as f64).round() as i32 * step;
-                if shift {
+                let on_field = pos.x >= layout.left - margin && pos.x <= layout.right() + margin;
+                if shift && on_field {
+                    let row = snapped_row(self, pos.y);
                     let cur = self.cursor_row();
                     self.selection = Some(Selection::rows(cur, row, self.num_cols()));
                     self.sel_anchor = None;
                 } else {
                     self.clear_selection();
                 }
-                self.jump_to_row(row);
             }
         }
     }
@@ -3416,6 +3425,8 @@ impl App {
                     ("Ctrl+Z / Ctrl+Y", "Deshacer / rehacer"),
                     ("Tab", "Empezar / cerrar una región en el cursor"),
                     ("Arrastrar con el mouse", "Selección rectangular (notas y cajas de tempo); con Shift suma cajas"),
+                    ("Click del medio (rueda)", "Llevar el cursor ahí"),
+                    ("Click", "Quitar la selección (no mueve el cursor)"),
                     ("Shift+click", "Seleccionar desde el cursor hasta ahí"),
                     ("Click en una caja de tempo", "Seleccionarla y editarla (valor, beat, borrar)"),
                     ("Shift+click en una caja", "Sumarla o quitarla de la selección"),
