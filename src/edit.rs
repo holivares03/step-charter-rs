@@ -230,7 +230,8 @@ fn take_selected(notes: &mut Vec<Note>, sel: &Selection) -> Vec<Note> {
 // Portapapeles
 // ---------------------------------------------------------------------------
 
-/// Notas copiadas, con filas relativas al inicio de la región.
+/// Notas copiadas, con filas relativas al inicio de la región, y cambios de tempo copiados
+/// junto con ellas (cajas seleccionadas en el notefield), relativos al mismo origen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Clip {
     pub span: i32,
@@ -240,6 +241,9 @@ pub struct Clip {
     /// `true` si se copió con un filtro: al pegar sólo se reemplazan las celdas que
     /// ocupan las notas pegadas, sin vaciar el resto de la región.
     pub merge: bool,
+    /// `false` si sólo se copiaron cambios de tempo: al pegar no se tocan las notas.
+    pub with_notes: bool,
+    pub tempo: Vec<(SegKind, i32, SegValue)>,
 }
 
 const CLIP_HEADER: &str = "Step Charter notes v1";
@@ -257,7 +261,7 @@ pub fn copy(notes: &[Note], sel: &Selection) -> Clip {
             c
         })
         .collect();
-    Clip { span: sel.span(), c0: sel.c0, c1: sel.c1, notes, merge: sel.filter.is_some() }
+    Clip { span: sel.span(), c0: sel.c0, c1: sel.c1, notes, merge: sel.filter.is_some(), with_notes: true, tempo: Vec::new() }
 }
 
 fn kind_str(k: NoteKind) -> String {
@@ -297,9 +301,21 @@ fn unopt(s: &str) -> Option<String> {
 }
 
 impl Clip {
-    /// Texto para el portapapeles del sistema (permite pegar entre ventanas).
+    /// Sólo cambios de tempo (filas relativas al primero).
+    pub fn tempo_only(tempo: Vec<(SegKind, i32, SegValue)>) -> Clip {
+        let span = tempo.iter().map(|t| t.1).max().unwrap_or(0).max(0);
+        Clip { span, c0: 0, c1: 0, notes: Vec::new(), merge: false, with_notes: false, tempo }
+    }
+
+    /// Texto para el portapapeles del sistema (permite pegar entre ventanas). Los cambios de
+    /// tempo van después de las notas, en líneas `tempo <tipo> <fila> <valor...>` separadas
+    /// por tabulaciones.
     pub fn to_text(&self) -> String {
-        let mode = if self.merge { "merge" } else { "region" };
+        let mode = match (self.with_notes, self.merge) {
+            (false, _) => "tempo",
+            (true, true) => "merge",
+            (true, false) => "region",
+        };
         let mut s = format!("{}\nspan\t{}\tcols\t{}\t{}\tmode\t{}\n", CLIP_HEADER, self.span, self.c0, self.c1, mode);
         for n in &self.notes {
             s.push_str(&format!(
@@ -316,6 +332,15 @@ impl Clip {
                 opt(&n.suffix)
             ));
         }
+        for (kind, row, value) in &self.tempo {
+            let v = match value {
+                SegValue::Num(x) => format!("{}", x),
+                SegValue::Pair(a, b) => format!("{}\t{}", a, b),
+                SegValue::Speed(r, d, u) => format!("{}\t{}\t{}", r, d, u),
+                SegValue::Label(t) => t.replace(['\t', '\r', '\n'], " "),
+            };
+            s.push_str(&format!("tempo\t{}\t{}\t{}\n", kind.tag(), row, v));
+        }
         s
     }
 
@@ -331,13 +356,33 @@ impl Clip {
         let span = head[1].parse().ok()?;
         let c0 = head[3].parse().ok()?;
         let c1 = head[4].parse().ok()?;
-        let merge = head.len() >= 7 && head[5] == "mode" && head[6] == "merge";
+        let mode = if head.len() >= 7 && head[5] == "mode" { head[6] } else { "region" };
+        let merge = mode == "merge";
+        let with_notes = mode != "tempo";
         let mut notes = Vec::new();
+        let mut tempo = Vec::new();
         for l in lines {
             if l.trim().is_empty() {
                 continue;
             }
             let f: Vec<&str> = l.split('\t').collect();
+            if f[0] == "tempo" {
+                if f.len() < 4 {
+                    return None;
+                }
+                let kind = SegKind::from_tag(f[1])?;
+                let row: i32 = f[2].parse().ok()?;
+                let num = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok());
+                let int = |i: usize| f.get(i).and_then(|v| v.parse::<i32>().ok());
+                let value = match kind {
+                    SegKind::TimeSig | SegKind::Combo => SegValue::Pair(int(3)?, int(4)?),
+                    SegKind::Speed => SegValue::Speed(num(3)?, num(4)?, int(5)?),
+                    SegKind::Label => SegValue::Label(f[3..].join(" ")),
+                    _ => SegValue::Num(num(3)?),
+                };
+                tempo.push((kind, row, value));
+                continue;
+            }
             if f.len() < 10 {
                 return None;
             }
@@ -354,7 +399,7 @@ impl Clip {
                 suffix: unopt(f[9]),
             });
         }
-        Some(Clip { span, c0, c1, notes, merge })
+        Some(Clip { span, c0, c1, notes, merge, with_notes, tempo })
     }
 }
 
@@ -738,7 +783,7 @@ pub fn insert_rows_timing(td: &mut TimingData, at: i32, n: i32) {
 
 /// Tipos de segmento que se editan: los del *Adjust Tempo* de ArrowVortex (BPM, stop, delay,
 /// warp) y los de su *Adjust Tempo (SM5)*.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SegKind {
     Bpm,
     Stop,
@@ -848,6 +893,38 @@ impl SegKind {
     /// scroll); los demás sólo existen en su beat.
     pub fn inherits(self) -> bool {
         matches!(self, SegKind::Bpm | SegKind::TimeSig | SegKind::Ticks | SegKind::Combo | SegKind::Speed | SegKind::Scroll)
+    }
+
+    /// Su caja va a la izquierda del notefield (si no, a la derecha).
+    pub fn left_side(self) -> bool {
+        !matches!(self, SegKind::Speed | SegKind::Scroll | SegKind::Fake | SegKind::Label)
+    }
+
+    /// Nombre en el texto del portapapeles.
+    fn tag(self) -> &'static str {
+        match self {
+            SegKind::Bpm => "bpm",
+            SegKind::Stop => "stop",
+            SegKind::Delay => "delay",
+            SegKind::Warp => "warp",
+            SegKind::TimeSig => "timesig",
+            SegKind::Ticks => "ticks",
+            SegKind::Combo => "combo",
+            SegKind::Speed => "speed",
+            SegKind::Scroll => "scroll",
+            SegKind::Fake => "fake",
+            SegKind::Label => "label",
+        }
+    }
+
+    fn from_tag(s: &str) -> Option<SegKind> {
+        SegKind::ALL.into_iter().find(|k| k.tag() == s)
+    }
+
+    /// Tipo por su nombre ("bpm", "stop", "compás"...), sin distinguir mayúsculas.
+    pub fn parse(s: &str) -> Option<SegKind> {
+        let s = s.to_lowercase();
+        SegKind::ALL.into_iter().find(|k| k.tag() == s || k.name().to_lowercase() == s)
     }
 
     /// Valor cuando no hay ningún segmento (los de StepMania 5).
@@ -971,12 +1048,95 @@ pub fn seg_set(td: &mut TimingData, kind: SegKind, row: i32, value: SegValue) {
     }
 }
 
+/// Un cambio de tempo concreto: tipo y fila (lo que se selecciona en el notefield).
+pub type SegRef = (SegKind, i32);
+
+/// Hay un segmento de ese tipo en esa fila.
+pub fn seg_exists(td: &TimingData, kind: SegKind, row: i32) -> bool {
+    match kind {
+        SegKind::Bpm => td.bpms.iter().any(|s| s.row == row),
+        SegKind::Stop => td.stops.iter().any(|s| s.row == row),
+        SegKind::Delay => td.delays.iter().any(|s| s.row == row),
+        SegKind::Warp => td.warps.iter().any(|s| s.row == row),
+        SegKind::TimeSig => td.time_sigs.iter().any(|s| s.row == row),
+        SegKind::Ticks => td.tick_counts.iter().any(|s| s.row == row),
+        SegKind::Combo => td.combos.iter().any(|s| s.row == row),
+        SegKind::Speed => td.speeds.iter().any(|s| s.row == row),
+        SegKind::Scroll => td.scrolls.iter().any(|s| s.row == row),
+        SegKind::Fake => td.fakes.iter().any(|s| s.row == row),
+        SegKind::Label => td.labels.iter().any(|s| s.row == row),
+    }
+}
+
+/// Es el primer BPM de la canción (obligatorio: no se borra ni se mueve).
+fn is_first_bpm(td: &TimingData, kind: SegKind, row: i32) -> bool {
+    kind == SegKind::Bpm && td.bpms.first().map(|b| b.row) == Some(row)
+}
+
 /// Puede borrarse el segmento: el primer BPM de la canción es obligatorio.
 pub fn seg_can_remove(td: &TimingData, kind: SegKind, row: i32) -> bool {
-    if seg_at(td, kind, row).is_none() {
-        return false;
+    seg_exists(td, kind, row) && !is_first_bpm(td, kind, row)
+}
+
+/// Mueve un segmento a otra fila. No se mueve el primer BPM, ni a una fila negativa, ni
+/// a una que ya tiene un segmento del mismo tipo.
+pub fn seg_move(td: &mut TimingData, kind: SegKind, from: i32, to: i32) -> Result<(), String> {
+    if to == from {
+        return Ok(());
     }
-    !(kind == SegKind::Bpm && td.bpms.len() <= 1)
+    let Some(value) = seg_at(td, kind, from) else { return Err("Ese cambio de tempo ya no existe.".into()) };
+    if is_first_bpm(td, kind, from) {
+        return Err("El primer BPM no se puede mover.".into());
+    }
+    if to < 0 {
+        return Err("No se puede mover antes del beat 0.".into());
+    }
+    if seg_exists(td, kind, to) {
+        return Err(format!("Ya hay un {} en el beat {:.3}.", kind.name(), row_to_beat(to)));
+    }
+    if kind == SegKind::Bpm && td.bpms.first().map(|b| to < b.row).unwrap_or(false) {
+        return Err("Un BPM no puede quedar antes del primero.".into());
+    }
+    seg_remove(td, kind, from);
+    seg_set(td, kind, to, value);
+    Ok(())
+}
+
+/// Segmentos de los tipos `kinds` con fila entre `r0` y `r1` (inclusive).
+pub fn segs_in_range(td: &TimingData, kinds: &[SegKind], r0: i32, r1: i32) -> Vec<SegRef> {
+    kinds
+        .iter()
+        .flat_map(|&k| seg_list(td, k).into_iter().filter(|(r, _)| *r >= r0 && *r <= r1).map(move |(r, _)| (k, r)))
+        .collect()
+}
+
+/// Copia los segmentos indicados con filas relativas a `origin`.
+pub fn copy_segs(td: &TimingData, refs: &[SegRef], origin: i32) -> Vec<(SegKind, i32, SegValue)> {
+    let mut out: Vec<(SegKind, i32, SegValue)> =
+        refs.iter().filter_map(|&(k, r)| seg_at(td, k, r).map(|v| (k, r - origin, v))).collect();
+    out.sort_by_key(|(k, r, _)| (*r, SegKind::ALL.iter().position(|x| x == k)));
+    out
+}
+
+/// Borra los segmentos indicados (menos el primer BPM). Devuelve cuántos se borraron.
+pub fn remove_segs(td: &mut TimingData, refs: &[SegRef]) -> usize {
+    refs.iter().filter(|&&(k, r)| seg_remove(td, k, r)).count()
+}
+
+/// Pega segmentos en `at` (reemplaza los del mismo tipo en la misma fila; se omiten los que
+/// caerían antes del beat 0). Devuelve los pegados.
+pub fn paste_segs(td: &mut TimingData, segs: &[(SegKind, i32, SegValue)], at: i32) -> Vec<SegRef> {
+    let mut pasted = Vec::new();
+    for (k, r, v) in segs {
+        let row = at + r;
+        if row >= 0 {
+            seg_set(td, *k, row, v.clone());
+            if seg_exists(td, *k, row) {
+                pasted.push((*k, row));
+            }
+        }
+    }
+    pasted
 }
 
 pub fn seg_remove(td: &mut TimingData, kind: SegKind, row: i32) -> bool {
@@ -1104,14 +1264,7 @@ pub fn copy_tempo(td: &TimingData, r0: i32, r1: i32) -> TempoClip {
 
 /// Pega los segmentos en `at` (reemplaza los del mismo tipo en la misma fila). Devuelve cuántos.
 pub fn paste_tempo(td: &mut TimingData, clip: &TempoClip, at: i32) -> usize {
-    let mut n = 0;
-    for (k, r, v) in &clip.segs {
-        if at + r >= 0 {
-            seg_set(td, *k, at + r, v.clone());
-            n += 1;
-        }
-    }
-    n
+    paste_segs(td, &clip.segs, at).len()
 }
 
 #[cfg(test)]
@@ -1156,7 +1309,7 @@ mod tests {
     #[test]
     fn paste_truncates_overlapping_hold() {
         let mut notes = vec![hold(0, 200, 0)];
-        let clip = Clip { span: 0, c0: 0, c1: 0, notes: vec![tap(0, 0)], merge: false };
+        let clip = Clip { span: 0, c0: 0, c1: 0, notes: vec![tap(0, 0)], merge: false, with_notes: true, tempo: Vec::new() };
         paste(&mut notes, &clip, 96, 5);
         assert_eq!(notes[0].end_row, 95);
         assert_eq!(notes[1].row, 96);
@@ -1537,5 +1690,77 @@ mod tests {
         assert_eq!(paste_tempo(&mut td, &clip, 480), 2);
         assert_eq!(seg_at(&td, SegKind::Scroll, 484), Some(Num(2.0)));
         assert_eq!(seg_at(&td, SegKind::Label, 504), Some(SegValue::Label("drop".into())));
+    }
+
+    /// Cajas de tempo seleccionadas: mover, borrar, copiar y pegar.
+    #[test]
+    fn selected_segments() {
+        use SegValue::*;
+        let mut td = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 120.0 }], ..Default::default() };
+        seg_set(&mut td, SegKind::Bpm, 96, Num(150.0));
+        seg_set(&mut td, SegKind::Stop, 96, Num(0.5));
+        seg_set(&mut td, SegKind::Scroll, 144, Num(2.0));
+        seg_set(&mut td, SegKind::Bpm, 192, Num(180.0));
+
+        // Mover: a una fila libre sí; a una ocupada por el mismo tipo, el primer BPM o antes del 0, no.
+        assert!(seg_move(&mut td, SegKind::Stop, 96, 120).is_ok());
+        assert_eq!(seg_at(&td, SegKind::Stop, 120), Some(Num(0.5)));
+        assert!(!seg_exists(&td, SegKind::Stop, 96));
+        assert!(seg_move(&mut td, SegKind::Bpm, 96, 192).is_err());
+        assert!(seg_move(&mut td, SegKind::Bpm, 0, 48).is_err());
+        assert!(seg_move(&mut td, SegKind::Scroll, 144, -1).is_err());
+        assert!(!seg_can_remove(&td, SegKind::Bpm, 0));
+
+        // Por tipo dentro de una región.
+        assert_eq!(segs_in_range(&td, &[SegKind::Bpm], 50, 500), vec![(SegKind::Bpm, 96), (SegKind::Bpm, 192)]);
+        assert_eq!(segs_in_range(&td, &SegKind::ALL, 100, 150), vec![(SegKind::Stop, 120), (SegKind::Scroll, 144)]);
+
+        // Copiar con filas relativas al origen, ordenados por fila.
+        let refs = [(SegKind::Scroll, 144), (SegKind::Bpm, 96), (SegKind::Stop, 120)];
+        let segs = copy_segs(&td, &refs, 96);
+        assert_eq!(segs, vec![(SegKind::Bpm, 0, Num(150.0)), (SegKind::Stop, 24, Num(0.5)), (SegKind::Scroll, 48, Num(2.0))]);
+
+        // Pegar devuelve lo pegado (para dejarlo seleccionado) y omite lo que cae antes del 0.
+        let pasted = paste_segs(&mut td, &segs, 480);
+        assert_eq!(pasted, vec![(SegKind::Bpm, 480), (SegKind::Stop, 504), (SegKind::Scroll, 528)]);
+        assert_eq!(paste_segs(&mut td, &[(SegKind::Stop, -10, Num(1.0))], 5), vec![]);
+
+        // Borrar varios: el primer BPM se salta.
+        let n = remove_segs(&mut td, &[(SegKind::Bpm, 0), (SegKind::Bpm, 480), (SegKind::Stop, 504)]);
+        assert_eq!(n, 2);
+        assert_eq!(td.bpms[0].row, 0);
+    }
+
+    /// Las cajas de tempo viajan en el texto del portapapeles, con o sin notas.
+    #[test]
+    fn clip_text_with_tempo() {
+        use SegValue::*;
+        let tempo = vec![
+            (SegKind::Bpm, 0, Num(150.5)),
+            (SegKind::TimeSig, 0, Pair(3, 4)),
+            (SegKind::Speed, 24, Speed(0.5, 2.25, 1)),
+            (SegKind::Label, 48, Label("Drop\tfinal".into())),
+            (SegKind::Stop, -12, Num(0.25)),
+        ];
+        let only = Clip::tempo_only(tempo.clone());
+        assert!(!only.with_notes);
+        assert_eq!(only.span, 48);
+        let back = Clip::from_text(&only.to_text()).unwrap();
+        assert!(!back.with_notes);
+        assert_eq!(back.tempo[3].2, Label("Drop final".into()));
+        assert_eq!(back.tempo[..3], tempo[..3]);
+        assert_eq!(back.tempo[4], tempo[4]);
+
+        let mut with_notes = copy(&[tap(48, 2)], &Selection::rows(0, 96, 5));
+        with_notes.tempo = tempo[..2].to_vec();
+        let back = Clip::from_text(&with_notes.to_text()).unwrap();
+        assert!(back.with_notes);
+        assert_eq!(back.notes.len(), 1);
+        assert_eq!(back.tempo, tempo[..2].to_vec());
+
+        // El formato anterior (sin tempo) se sigue leyendo.
+        let old = "Step Charter notes v1\nspan\t0\tcols\t0\t4\tmode\tregion\n0\t0\t1\ttap\t0\t0\t0\t-\t-\t-\n";
+        let c = Clip::from_text(old).unwrap();
+        assert!(c.with_notes && c.tempo.is_empty() && c.notes.len() == 1);
     }
 }
