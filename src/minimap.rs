@@ -94,6 +94,17 @@ impl MinimapMap {
     }
 }
 
+/// Inicio del eje del minimapa. Con el cursor al inicio del chart, la vista empieza antes (el
+/// espacio sobre los receptores): el eje incluye ese espacio para que, arrastrando hasta el
+/// tope, el cursor llegue al inicio.
+fn axis_start(range: (f64, f64), view: Option<(f64, f64)>, cursor: f64) -> f64 {
+    let (lo, hi) = range;
+    match view {
+        Some((v0, _)) => lo - (cursor - v0).clamp(0.0, (hi - lo).max(0.0) * 0.5),
+        None => lo,
+    }
+}
+
 fn axis(inp: &MinimapInput, row: i32) -> f64 {
     if inp.time_axis {
         inp.table.time_at_row(row)
@@ -118,10 +129,11 @@ fn density_color(t: f32) -> Color32 {
 
 pub fn draw(painter: &Painter, rect: Rect, inp: &MinimapInput) -> MinimapMap {
     painter.rect_filled(rect, 0.0, Color32::from_rgb(14, 14, 18));
-    let (lo, mut hi) = inp.range;
-    if hi - lo < 1e-6 {
-        hi = lo + 1.0;
+    let (chart_lo, mut hi) = inp.range;
+    if hi - chart_lo < 1e-6 {
+        hi = chart_lo + 1.0;
     }
+    let lo = axis_start((chart_lo, hi), inp.view, inp.cursor);
     let inner = rect.shrink2(egui::vec2(4.0, 6.0));
     let panel = inner.height() as f64;
     let scale = inp.scale.unwrap_or(panel / (hi - lo)).max(1e-6);
@@ -152,8 +164,8 @@ pub fn draw(painter: &Painter, rect: Rect, inp: &MinimapInput) -> MinimapMap {
     let lanes_left = inner.center().x - lane_w * num_cols as f32 * 0.5;
     let mark_w = (lane_w * 0.68).max(1.0);
     let lane_cx = |c: usize| lanes_left + (c as f32 + 0.5) * lane_w;
-    let content_top = map.y_of(lo).min(map.y_of(hi)).max(inner.top());
-    let content_bot = map.y_of(lo).max(map.y_of(hi)).min(inner.bottom());
+    let content_top = map.y_of(chart_lo).min(map.y_of(hi)).max(inner.top());
+    let content_bot = map.y_of(chart_lo).max(map.y_of(hi)).min(inner.bottom());
 
     // Fondo tenue de cada carril (sólo donde hay chart, y no en modo densidad).
     for c in (0..num_cols).filter(|_| !inp.density) {
@@ -399,6 +411,19 @@ mod tests {
         let bottom = m.cursor_for_pointer(500.0, view, cursor);
         assert!((top - 1.0).abs() < 1e-9, "{}", top); // vista en 0..3
         assert!((bottom - 298.0).abs() < 1e-9, "{}", bottom); // vista en 297..300
+    }
+
+    #[test]
+    fn pointer_at_top_reaches_chart_start() {
+        // Vista de 3 s con los receptores 1 s después de su inicio: con el cursor en 0 la vista
+        // empieza en -1, así que el eje del minimapa empieza ahí.
+        let lo = axis_start((0.0, 300.0), Some((10.0, 13.0)), 11.0);
+        assert!((lo + 1.0).abs() < 1e-9, "{}", lo);
+        let m = MinimapMap { lo, ..map(300.0, 10.0, 0.0) };
+        let top = m.cursor_for_pointer(0.0, Some((10.0, 13.0)), 11.0);
+        assert!(top.abs() < 1e-9, "el tope debe llevar el cursor al inicio: {}", top);
+        // Sin vista, el eje empieza en el inicio del chart.
+        assert_eq!(axis_start((0.0, 300.0), None, 5.0), 0.0);
     }
 
     #[test]
