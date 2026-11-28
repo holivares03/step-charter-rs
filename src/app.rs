@@ -2402,7 +2402,7 @@ impl App {
                         boxes.push((b.kind, b.row));
                     }
                 }
-                self.selection = if touches_field && r1 >= r0 { Some(Selection::new(r0, r1, c0, c1)) } else { None };
+                self.selection = if touches_field && r1 >= r0 { Some(Selection { from_mouse: true, ..Selection::new(r0, r1, c0, c1) }) } else { None };
                 self.tempo_sel = boxes;
                 ui.painter().rect(
                     area,
@@ -2415,6 +2415,14 @@ impl App {
         }
         if response.drag_stopped() {
             self.drag_start = None;
+            // Si el rectángulo no agarró notas ni cajas, no queda una selección invisible.
+            let empty = match (&self.selection, self.chart()) {
+                (Some(s), Some(c)) => s.from_mouse && edit::count_selected(&c.notes, s) == 0,
+                _ => false,
+            };
+            if empty && self.tempo_sel.is_empty() {
+                self.selection = None;
+            }
         }
 
         // Fila del snap más cercana a una posición del mouse.
@@ -3384,7 +3392,6 @@ impl App {
                 player_skins: &self.player_skins,
                 tempo_sel: &self.tempo_sel,
                 hover: response.hover_pos(),
-                dragging: self.drag_start.is_some(),
             };
             let layout = notefield::draw(&painter, rect, &input);
             self.handle_field_mouse(ui, &response, &layout);

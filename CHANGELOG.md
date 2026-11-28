@@ -32,8 +32,11 @@ Todos los cambios importantes de Step Charter. El formato sigue
 - Como en ArrowVortex, el clic izquierdo en el chart ya no mueve el cursor: sólo quita la
   selección (o, con Shift, selecciona desde el cursor hasta ahí). El cursor se lleva a una
   fila con el clic del medio (la rueda).
-- Mientras se arrastra un rectángulo de selección se ve sólo ese rectángulo; el recuadro de
-  la región aparece al soltar (antes se veían los dos a la vez).
+- Como en ArrowVortex, al seleccionar con el rectángulo del mouse se marcan sólo las notas y
+  las cajas de tempo, sin el recuadro de fondo de la región (antes, mientras se arrastraba, se
+  veían los dos rectángulos). Si el rectángulo no agarra nada, se quita la selección. Las
+  regiones elegidas con Tab, Shift+clic, Ctrl+A o Shift+Inicio/Fin siguen mostrando su
+  recuadro.
 
 ### Arreglado
 - Arrastrando en el minimapa hasta el tope o hasta el fondo, el cursor no llegaba al beat 0 ni
