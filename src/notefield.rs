@@ -148,6 +148,9 @@ pub struct FieldInput<'a> {
     pub tempo_sel: &'a [SegRef],
     /// Posición del mouse (para resaltar la caja de tempo bajo él).
     pub hover: Option<Pos2>,
+    /// Se está arrastrando un rectángulo de selección: no se dibuja el recuadro de la región
+    /// (sólo el del mouse y el borde de las notas seleccionadas).
+    pub dragging: bool,
 }
 
 /// Caja de un cambio de tempo dibujada a un lado del notefield.
@@ -435,7 +438,7 @@ pub fn draw(painter: &Painter, rect: Rect, inp: &FieldInput) -> Layout {
     }
 
     // --- Región seleccionada -------------------------------------------------
-    if let Some(sel) = inp.selection {
+    if let Some(sel) = inp.selection.filter(|_| !inp.dragging) {
         let y0 = lay.y_of_row(table, sel.r0);
         let y1 = lay.y_of_row(table, sel.r1);
         let pad = note_size * 0.5;

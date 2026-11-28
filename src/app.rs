@@ -3384,6 +3384,7 @@ impl App {
                 player_skins: &self.player_skins,
                 tempo_sel: &self.tempo_sel,
                 hover: response.hover_pos(),
+                dragging: self.drag_start.is_some(),
             };
             let layout = notefield::draw(&painter, rect, &input);
             self.handle_field_mouse(ui, &response, &layout);
