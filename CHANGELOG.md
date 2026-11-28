@@ -39,6 +39,10 @@ Todos los cambios importantes de Step Charter. El formato sigue
   recuadro.
 
 ### Arreglado
+- Al copiar notas seleccionadas con el rectángulo del mouse y pegarlas, quedaban corridas la
+  distancia entre el borde del rectángulo y la primera nota. Ahora, al soltar, la selección se
+  ajusta a las notas que agarró y al pegar la primera queda en el cursor, como en
+  ArrowVortex. Si el rectángulo sólo agarró cajas de tempo, al pegarlas ya no se borran notas.
 - Arrastrando en el minimapa hasta el tope o hasta el fondo, el cursor no llegaba al beat 0 ni
   al final del chart (quedaba unos beats antes).
 - El cursor se podía seguir bajando en el chart después del final de la canción. Ahora llega

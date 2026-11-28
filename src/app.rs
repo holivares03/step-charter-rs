@@ -2415,13 +2415,16 @@ impl App {
         }
         if response.drag_stopped() {
             self.drag_start = None;
-            // Si el rectángulo no agarró notas ni cajas, no queda una selección invisible.
-            let empty = match (&self.selection, self.chart()) {
-                (Some(s), Some(c)) => s.from_mouse && edit::count_selected(&c.notes, s) == 0,
-                _ => false,
+            // La región del mouse se ajusta a las notas que agarró (de la primera a la última):
+            // al copiar y pegar, la primera queda en el cursor, y Ctrl+B, stop y stutter usan
+            // esos límites y no los bordes invisibles del rectángulo. Sin notas, no queda región
+            // (y al copiar sólo cajas de tempo no se borran notas al pegar).
+            let trimmed = match (&self.selection, self.chart()) {
+                (Some(s), Some(c)) if s.from_mouse => Some(edit::trim_to_notes(&c.notes, s)),
+                _ => None,
             };
-            if empty && self.tempo_sel.is_empty() {
-                self.selection = None;
+            if let Some(t) = trimmed {
+                self.selection = t;
             }
         }
 
