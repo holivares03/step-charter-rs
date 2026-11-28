@@ -58,6 +58,11 @@ escrito en Rust y **basado profundamente en [ArrowVortex](https://github.com/uvc
   borrar beats en el cursor (en este chart o en todos).
 - **Herramientas de tempo** (menú *Tempo*): cambio de BPM límite (Ctrl+B), convertir la
   selección en stop o en stutter, y copiar y pegar cambios de tempo.
+- **Cajas de tempo seleccionables**: con un clic en una caja (BPM, stop, scroll, label…) se
+  abre a su lado un editor con su valor, su beat (para moverla) y *Borrar*. Con Shift+clic o
+  arrastrando un rectángulo se seleccionan varias, junto con notas o solas; Ctrl+C / Ctrl+V
+  las copian y pegan en el cursor y Supr las borra. *Editar → Seleccionar cambios de tempo*
+  las selecciona por tipo. Al pasar el mouse por una caja se ve su ayuda.
 - **Guardado seguro**: se conservan los tags desconocidos (`#QUESTMODS`, `#HEARTS`, …) y
   el texto exacto de los charts que no editaste. La primera vez que se sobrescribe un
   archivo se crea un `.bak` con el original.
@@ -80,7 +85,8 @@ escrito en Rust y **basado profundamente en [ArrowVortex](https://github.com/uvc
 ```
 cargo build --release
 target\release\step-charter.exe [archivo.ssc | audio.ogg] [--chart N] [--beat B] [--view time|rows|game]
-    [--select A:B] [--mirror h|v|hv] [--tempo] [--minimap notas|densidad] [--noteskin nombre]
+    [--select A:B] [--mirror h|v|hv] [--tempo] [--select-tempo tipo|todos]
+    [--minimap notas|densidad] [--noteskin nombre]
     [--dialog cancion|chart|nuevo|importar]
 ```
 
@@ -104,9 +110,11 @@ ventana.
 | Shift+1..0 / Alt+1..0 | Roll / mina |
 | / | Co-op: jugador activo o, con selección, pasarla al jugador siguiente |
 | Ctrl+Z / Ctrl+Y | Deshacer / rehacer |
-| Tab / arrastrar / Shift+click | Seleccionar región |
+| Tab / arrastrar / Shift+click | Seleccionar región (arrastrando también se seleccionan cajas de tempo) |
+| Click / Shift+click en una caja de tempo | Seleccionarla y editarla / sumarla a la selección |
 | Ctrl+A / Esc | Seleccionar todo / quitar selección |
-| Ctrl+C / Ctrl+X / Ctrl+V / Supr | Copiar / cortar / pegar / borrar |
+| Ctrl+Shift+A | Seleccionar todo, también los cambios de tempo |
+| Ctrl+C / Ctrl+X / Ctrl+V / Supr | Copiar / cortar / pegar / borrar (notas y cajas de tempo) |
 | Y / T / G | Espejo horizontal / vertical / completo |
 | º (bajo Esc) | Holds ↔ rolls en la selección |
 | Shift+T | Editor de tempo y sincronía |

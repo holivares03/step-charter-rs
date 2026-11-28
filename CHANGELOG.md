@@ -13,10 +13,22 @@ Todos los cambios importantes de Step Charter. El formato sigue
   selección), para ajustar el tempo sólo en esa zona sin alterar la sincronía.
 - *Tempo → Convertir la selección en stop / en stutter* (el stutter no desfasa lo que sigue).
 - *Tempo → Copiar tempo de la selección / Pegar tempo en el cursor*.
+- Cajas de tempo seleccionables en el notefield: un clic abre a su lado un editor con el
+  valor, el beat (para mover la caja), *Ir* y *Borrar*; Shift+clic suma o quita cajas, y el
+  rectángulo del mouse las selecciona junto con las notas. Ctrl+C / Ctrl+X / Ctrl+V y Supr
+  funcionan con ellas (solas o con notas, también entre ventanas).
+- *Editar → Seleccionar cambios de tempo* por tipo (dentro de la región o en todo el chart) y
+  Ctrl+Shift+A para seleccionar todas las notas y todos los cambios de tempo.
+- Ayuda al pasar el mouse por una caja de tempo: tipo, valor, beat y explicación.
+- Opción `--select-tempo tipo|todos` para abrir con cambios de tempo seleccionados.
 
 ### Cambiado
 - En el editor de tempo, poner en 0 un stop, delay, warp o fake (o vaciar un label) quita el
   segmento en vez de dejarlo con valor 0.
+- El primer BPM de la canción ya no se puede borrar aunque haya otros (antes sí, si no era
+  el único).
+- Arrastrar un rectángulo que sólo pasa por fuera de las columnas ya no selecciona notas de
+  la columna más cercana.
 
 ### Arreglado
 - Arrastrando en el minimapa hasta el tope o hasta el fondo, el cursor no llegaba al beat 0 ni
