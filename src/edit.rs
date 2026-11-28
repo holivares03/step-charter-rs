@@ -101,11 +101,14 @@ pub struct Selection {
     pub c0: usize,
     pub c1: usize,
     pub filter: Option<NoteFilter>,
+    /// Se eligió con el rectángulo del mouse: se marcan sólo las notas, sin el recuadro de la
+    /// región (como en ArrowVortex).
+    pub from_mouse: bool,
 }
 
 impl Selection {
     pub fn new(ra: i32, rb: i32, ca: usize, cb: usize) -> Self {
-        Selection { r0: ra.min(rb), r1: ra.max(rb), c0: ca.min(cb), c1: ca.max(cb), filter: None }
+        Selection { r0: ra.min(rb), r1: ra.max(rb), c0: ca.min(cb), c1: ca.max(cb), filter: None, from_mouse: false }
     }
 
     pub fn with_filter(mut self, f: NoteFilter) -> Self {

@@ -434,8 +434,9 @@ pub fn draw(painter: &Painter, rect: Rect, inp: &FieldInput) -> Layout {
         draw_gimmick_zones(painter, &lay, table, inp.timing, row_min, row_max);
     }
 
-    // --- Región seleccionada -------------------------------------------------
-    if let Some(sel) = inp.selection {
+    // --- Región seleccionada (Tab, Shift+clic, Ctrl+A...) ----------------------
+    // Con el rectángulo del mouse sólo se marcan las notas, como en ArrowVortex.
+    if let Some(sel) = inp.selection.filter(|s| !s.from_mouse) {
         let y0 = lay.y_of_row(table, sel.r0);
         let y1 = lay.y_of_row(table, sel.r1);
         let pad = note_size * 0.5;

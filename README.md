@@ -110,6 +110,8 @@ ventana.
 | Shift+1..0 / Alt+1..0 | Roll / mina |
 | / | Co-op: jugador activo o, con selección, pasarla al jugador siguiente |
 | Ctrl+Z / Ctrl+Y | Deshacer / rehacer |
+| Click del medio (rueda) | Llevar el cursor a esa fila |
+| Click | Quitar la selección (no mueve el cursor) |
 | Tab / arrastrar / Shift+click | Seleccionar región (arrastrando también se seleccionan cajas de tempo) |
 | Click / Shift+click en una caja de tempo | Seleccionarla y editarla / sumarla a la selección |
 | Ctrl+A / Esc | Seleccionar todo / quitar selección |
