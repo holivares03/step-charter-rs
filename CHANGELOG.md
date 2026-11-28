@@ -18,6 +18,14 @@ Todos los cambios importantes de Step Charter. El formato sigue
 - En el editor de tempo, poner en 0 un stop, delay, warp o fake (o vaciar un label) quita el
   segmento en vez de dejarlo con valor 0.
 
+### Arreglado
+- Arrastrando en el minimapa hasta el tope, el cursor no llegaba al beat 0 (quedaba uno o dos
+  beats más abajo).
+- El cursor se podía seguir bajando en el chart después del final de la canción. Ahora llega
+  hasta la última nota, el último cambio de tempo o el final de la música (lo más lejano),
+  más un margen hasta el compás siguiente, como en ArrowVortex. El minimapa termina en el
+  mismo lugar y la reproducción se detiene ahí.
+
 ## [0.2.0] - 2026-11-27
 
 Edición de notas: convertir tipos, escalar, cambiar de lado, cambiar de jugador e insertar o
