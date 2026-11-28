@@ -6,6 +6,13 @@ Todos los cambios importantes de Step Charter. El formato sigue
 
 ## [Sin publicar]
 
+## [0.3.0] - 2026-11-28
+
+Tempo de StepMania 5 y cajas de tempo seleccionables: editar compás, ticks, combo, speed,
+scroll, fakes y labels; Ctrl+B, stop y stutter; seleccionar, editar, copiar y pegar los
+cambios de tempo con el mouse. El mouse funciona como en ArrowVortex y el cursor ya no pasa
+del final de la canción.
+
 ### Agregado
 - Editor de tempo: sección *StepMania 5* para editar en el cursor compás, ticks, combo,
   speed (factor, duración y unidad), scroll, fakes y labels.
@@ -102,6 +109,7 @@ Primera versión pública.
 - Reproducción sincronizada de mp3, ogg, wav y flac con volumen, velocidad y ticks.
 - Verificador de biblioteca (`--check`) y opciones de línea de comandos.
 
-[Sin publicar]: https://github.com/holivares03/step-charter-rs/compare/v0.2.0...HEAD
+[Sin publicar]: https://github.com/holivares03/step-charter-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/holivares03/step-charter-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/holivares03/step-charter-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/holivares03/step-charter-rs/releases/tag/v0.1.0
