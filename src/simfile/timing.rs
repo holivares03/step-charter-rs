@@ -244,6 +244,24 @@ pub fn write_labels(v: &[LabelSeg]) -> String {
 }
 
 impl TimingData {
+    /// Fila del último segmento de cualquier tipo (0 si no hay).
+    pub fn last_segment_row(&self) -> i32 {
+        let rows = [
+            self.bpms.iter().map(|s| s.row).max(),
+            self.stops.iter().map(|s| s.row).max(),
+            self.delays.iter().map(|s| s.row).max(),
+            self.warps.iter().map(|s| s.row).max(),
+            self.time_sigs.iter().map(|s| s.row).max(),
+            self.tick_counts.iter().map(|s| s.row).max(),
+            self.combos.iter().map(|s| s.row).max(),
+            self.speeds.iter().map(|s| s.row).max(),
+            self.scrolls.iter().map(|s| s.row).max(),
+            self.fakes.iter().map(|s| s.row).max(),
+            self.labels.iter().map(|s| s.row).max(),
+        ];
+        rows.into_iter().flatten().max().unwrap_or(0).max(0)
+    }
+
     /// Ordena los segmentos por fila (orden estable) — StepMania hace lo mismo al cargar.
     pub fn sort(&mut self) {
         self.bpms.sort_by_key(|s| s.row);
@@ -667,9 +685,50 @@ impl ScrollMap {
     }
 }
 
+/// Última fila hasta la que se puede mover el cursor (como `getEndRow` de ArrowVortex): lo
+/// más lejano entre la última nota, el último segmento de timing y el final de la música,
+/// redondeado al compás siguiente con al menos medio compás de margen (o, si ese compás queda
+/// a más de 10 s, al beat siguiente con al menos medio beat).
+pub fn end_row(last_note_row: i32, td: &TimingData, table: &TimingTable, music_len: Option<f64>) -> i32 {
+    let mut end = last_note_row.max(td.last_segment_row()).max(0);
+    if let Some(len) = music_len.filter(|l| *l > 0.0) {
+        end = end.max(beat_to_row(table.beat_at_time(len)));
+    }
+    let round_up = |unit: i32| {
+        let r = end + unit * 3 / 2 - 1;
+        r - r.rem_euclid(unit)
+    };
+    let beat_row = round_up(ROWS_PER_BEAT);
+    let measure_row = round_up(ROWS_PER_MEASURE);
+    if table.time_at_row(measure_row) - table.time_at_row(end) < 10.0 {
+        measure_row
+    } else {
+        beat_row
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn end_row_like_arrowvortex() {
+        let td = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 120.0 }], ..Default::default() };
+        let table = td.build_table();
+        // Última nota justo al inicio del compás 10: termina en el 11 (un compás de margen).
+        assert_eq!(end_row(10 * ROWS_PER_MEASURE, &td, &table, None), 11 * ROWS_PER_MEASURE);
+        // A mitad del compás 10: también el 11 (medio compás de margen).
+        assert_eq!(end_row(10 * ROWS_PER_MEASURE + 96, &td, &table, None), 11 * ROWS_PER_MEASURE);
+        // La música manda si termina después (120 BPM: 60 s = 120 beats = compás 30).
+        assert_eq!(end_row(0, &td, &table, Some(60.0)), 31 * ROWS_PER_MEASURE);
+        // Un segmento de timing más lejano también cuenta.
+        let mut td2 = td.clone();
+        td2.labels.push(LabelSeg { row: 50 * ROWS_PER_MEASURE, text: "fin".into() });
+        assert_eq!(end_row(0, &td2, &td2.build_table(), None), 51 * ROWS_PER_MEASURE);
+        // Con un BPM muy lento el compás queda a más de 10 s: se redondea al beat.
+        let slow = TimingData { bpms: vec![BpmSeg { row: 0, bpm: 10.0 }], ..Default::default() };
+        assert_eq!(end_row(4 * ROWS_PER_BEAT, &slow, &slow.build_table(), None), 5 * ROWS_PER_BEAT);
+    }
 
     fn td(bpms: &str, stops: &str, delays: &str, warps: &str, offset: f64) -> TimingData {
         TimingData {

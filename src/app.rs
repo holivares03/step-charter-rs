@@ -15,7 +15,7 @@ use crate::notefield::{self, FieldInput, Layout, ViewSettings};
 use crate::noteskin::{self, ExternalSkin, Noteskin};
 use crate::simfile::notes::{self, Note, NoteKind};
 use crate::simfile::style::{Game, PlayerMode};
-use crate::simfile::timing::{beat_to_row, row_to_beat, ScrollMap, TimingData, TimingTable, ROWS_PER_BEAT, ROWS_PER_MEASURE};
+use crate::simfile::timing::{self, beat_to_row, row_to_beat, ScrollMap, TimingData, TimingTable, ROWS_PER_BEAT, ROWS_PER_MEASURE};
 use crate::simfile::{self, Chart, SimFormat, Song, Tag};
 
 mod dialogs;
@@ -814,10 +814,19 @@ impl App {
 
     /// Mueve el cursor a un beat. Al navegar a mano el cursor no baja del beat 0
     /// (compás 0); sólo la reproducción puede estar antes, si la música empieza antes.
+    /// El cursor va del beat 0 a la fila final del chart (ver `timing::end_row`).
     fn set_cursor_beat(&mut self, beat: f64) {
-        let beat = beat.max(0.0);
+        let beat = beat.clamp(0.0, row_to_beat(self.end_row()).max(0.0));
         self.cursor_beat = beat;
         self.cursor_time = self.table.time_at_beat(beat);
+    }
+
+    /// Última fila a la que llega el cursor: la última nota, el último cambio de tempo o el
+    /// final de la música, más un margen hasta el compás siguiente.
+    fn end_row(&self) -> i32 {
+        let (Some(chart), Some(td)) = (self.chart(), self.timing()) else { return 0 };
+        let music = self.music.as_ref().map(|m| m.duration());
+        timing::end_row(chart.last_row(), td, &self.table, music)
     }
 
     fn set_cursor_time(&mut self, t: f64) {
@@ -2877,14 +2886,12 @@ impl App {
                     let Some(song) = self.song.as_ref() else { return };
                     let Some(chart) = song.charts.get(self.chart_idx) else { return };
                     let table = &self.table;
-                    let music_end = self.music.as_ref().map(|m| m.duration());
-                    let last_row = chart.last_row();
+                    // Del beat 0 a la fila final, los mismos límites que tiene el cursor.
+                    let end_row = self.end_row();
                     let range = if time_axis {
-                        let end = table.time_at_row(last_row).max(music_end.unwrap_or(0.0));
-                        (table.time_at_beat(0.0), end + 1.0)
+                        (table.time_at_beat(0.0), table.time_at_row(end_row))
                     } else {
-                        let end = row_to_beat(last_row).max(music_end.map(|t| table.beat_at_time(t)).unwrap_or(0.0));
-                        (0.0, end + 4.0)
+                        (0.0, row_to_beat(end_row))
                     };
                     let pump = chart.style.game == Game::Pump;
                     // Parte visible del notefield con el cursor actual.
@@ -3143,9 +3150,11 @@ impl eframe::App for App {
 
         // Reproducción: el cursor sigue al audio.
         if self.audio.is_playing() {
+            // Se detiene al final del preview, después de la última nota o en la fila final.
+            let end_time = self.table.time_at_row(self.end_row());
+            let stop_at = self.preview_stop.unwrap_or(self.play_end).min(end_time);
             let t = self.audio.time();
-            self.set_cursor_time(t);
-            let stop_at = self.preview_stop.unwrap_or(self.play_end);
+            self.set_cursor_time(t.min(stop_at));
             if t > stop_at {
                 self.audio.stop();
                 self.preview_stop = None;
