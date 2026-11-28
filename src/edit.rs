@@ -139,6 +139,17 @@ pub fn count_selected(notes: &[Note], sel: &Selection) -> usize {
     notes.iter().filter(|n| sel.contains(n)).count()
 }
 
+/// La región ajustada a las notas que contiene (de la primera a la última fila), con las
+/// mismas notas seleccionadas; `None` si no contiene ninguna. Se usa al soltar el rectángulo
+/// del mouse: así, al copiar y pegar, la primera nota queda en el cursor (como en ArrowVortex)
+/// y no a la distancia a la que empezó el rectángulo.
+pub fn trim_to_notes(notes: &[Note], sel: &Selection) -> Option<Selection> {
+    let mut rows = notes.iter().filter(|n| sel.contains(n)).map(|n| n.row);
+    let first = rows.next()?;
+    let (r0, r1) = rows.fold((first, first), |(a, b), r| (a.min(r), b.max(r)));
+    Some(Selection { r0, r1, ..sel.clone() })
+}
+
 /// Recorta holds que se solapan con la siguiente nota de su columna (StepMania no
 /// admite solapes) y ordena.
 pub fn normalize(notes: &mut Vec<Note>) {
@@ -1307,6 +1318,24 @@ mod tests {
         // Las notas en 192 y 200 (dentro de la región) se reemplazan.
         let rows: Vec<(i32, u8)> = notes.iter().map(|n| (n.row, n.col)).collect();
         assert_eq!(rows, vec![(0, 0), (48, 1), (192, 0), (240, 1), (400, 2)]);
+    }
+
+    /// El rectángulo del mouse empezó un beat antes de la primera nota: al soltarlo, la región
+    /// se ajusta a las notas y al pegar la primera queda en el cursor.
+    #[test]
+    fn mouse_selection_pastes_first_note_at_cursor() {
+        let notes = vec![tap(48, 0), tap(72, 1), tap(96, 2), tap(144, 4), tap(300, 3)];
+        let drag = Selection { from_mouse: true, ..Selection::new(0, 200, 0, 4) };
+        let sel = trim_to_notes(&notes, &drag).unwrap();
+        assert_eq!((sel.r0, sel.r1), (48, 144));
+        assert!(sel.from_mouse);
+        assert_eq!(count_selected(&notes, &sel), count_selected(&notes, &drag));
+        let clip = copy(&notes, &sel);
+        let mut target = Vec::new();
+        paste(&mut target, &clip, 480, 5);
+        assert_eq!(target.iter().map(|n| n.row).collect::<Vec<_>>(), vec![480, 504, 528, 576]);
+        // Sin notas dentro, no queda región.
+        assert!(trim_to_notes(&notes, &Selection::new(150, 290, 0, 4)).is_none());
     }
 
     #[test]
