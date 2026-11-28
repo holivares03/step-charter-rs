@@ -19,8 +19,8 @@ Todos los cambios importantes de Step Charter. El formato sigue
   segmento en vez de dejarlo con valor 0.
 
 ### Arreglado
-- Arrastrando en el minimapa hasta el tope, el cursor no llegaba al beat 0 (quedaba uno o dos
-  beats más abajo).
+- Arrastrando en el minimapa hasta el tope o hasta el fondo, el cursor no llegaba al beat 0 ni
+  al final del chart (quedaba unos beats antes).
 - El cursor se podía seguir bajando en el chart después del final de la canción. Ahora llega
   hasta la última nota, el último cambio de tempo o el final de la música (lo más lejano),
   más un margen hasta el compás siguiente, como en ArrowVortex. El minimapa termina en el
