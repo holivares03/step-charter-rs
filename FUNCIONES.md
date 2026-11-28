@@ -5,7 +5,7 @@ Estado: ✅ hecho · 🟡 parcial · ❌ pendiente
 La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowVortex 1.0.1
 (`D:\ArrowVortex-1.0.1-Windows`). Al final están los extras propios y las ideas nuevas.
 
-**Resumen de paridad con ArrowVortex:** 74 ✅ · 8 🟡 · 29 ❌ (111 funciones)
+**Resumen de paridad con ArrowVortex:** 76 ✅ · 8 🟡 · 27 ❌ (111 funciones)
 
 ---
 
@@ -75,7 +75,7 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Posición de los receptores | 🟡 | Sólo la vertical |
 | Líneas de beat y números de compás | ✅ | Respeta las time signatures |
 | Cajas de cambios de tempo | ✅ | Todos los tipos de segmento |
-| Ayuda de tempo (tempo help) | ❌ | |
+| Ayuda de tempo (tempo help) | ✅ | Al pasar el mouse por una caja: tipo, valor, beat y explicación |
 | Waveform | 🟡 | Básico, sin opciones |
 | Ajustes del waveform (colores, estilo, luminancia, suavizado) | ❌ | |
 | Filtro de frecuencias del waveform (superpuesto) | ❌ | |
@@ -113,7 +113,7 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Seleccionar región (Tab), antes o después del cursor, todo | ✅ | También selección rectangular con el mouse y Shift+click |
 | Seleccionar por tipo (pasos, minas, holds, rolls, fakes, lifts, saltos, notas en warp) | ✅ | Dentro de la región actual o en todo el chart (menú *Editar* y panel lateral) |
 | Seleccionar por cuantización (4th … 192nd) | ✅ | |
-| Copiar / cortar / pegar / borrar | ✅ | Pega en el cursor reemplazando la región; sirve entre ventanas |
+| Copiar / cortar / pegar / borrar | ✅ | Pega en el cursor reemplazando la región; sirve entre ventanas; incluye las cajas de tempo seleccionadas |
 | Copia basada en tiempo (time-based copy) | ❌ | |
 | Notas → minas / fakes / lifts, y al revés | ✅ | *Editar → Convertir*; los tokens de StepF2 se actualizan y de fake a nota se conserva el hold |
 | Holds → pasos / minas | ✅ | *Editar → Convertir* |
@@ -141,8 +141,8 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 | Insertar un cambio de BPM que encierre la selección (Ctrl+B) | ✅ | Mismo BPM en los extremos de la selección (o en el cursor): no altera la sincronía |
 | Visual sync (arrastrar beats al audio; ancla en cursor o receptor) | ❌ | En ArrowVortex, B / Alt+B (no destructivo / destructivo) |
 | Convertir la selección en stop / stutter | ✅ | Menú *Tempo* y editor de tempo; el stutter no desfasa lo que sigue |
-| Seleccionar segmentos de tempo por tipo | ❌ | |
-| Copiar / pegar datos de tempo | ✅ | Menú *Tempo*: copiar los cambios de tempo de la selección y pegarlos en el cursor |
+| Seleccionar segmentos de tempo por tipo | ✅ | *Editar → Seleccionar cambios de tempo*, dentro de la región o en todo el chart; también con el mouse (clic, Shift+clic, rectángulo) |
+| Copiar / pegar datos de tempo | ✅ | Ctrl+C / Ctrl+V con cajas de tempo seleccionadas (solas o con notas, también entre ventanas) y menú *Tempo* |
 | Tempo breakdown / stream breakdown (copiar al portapapeles) | ❌ | |
 
 ## 9. Audio
@@ -186,11 +186,12 @@ La lista de ArrowVortex sale de los menús, diálogos, atajos y textos de ArrowV
 - ✅ Zonas de gimmicks sobre el chart: warps (morado), fakes (rayado), stops y delays (rojo / naranja, con su duración en la vista por tiempo), transiciones de speed (franja azul a la derecha) y scrolls (franja a la izquierda: cian > 1, verde < 1, amarillo = 0, magenta = hacia atrás).
 - ✅ Minimapa con zoom propio para *Notas* y para *Densidad* (Ctrl+rueda) y opción de ver todo el chart en pantalla.
 - ✅ Editor de tempo: crear o descartar el timing propio de un chart y lista de todos los segmentos con "ir" y borrar.
+- ✅ Editor junto a la caja de tempo seleccionada: valor, ×2 / ÷2, borrar, ir al beat y **mover la caja a otro beat** (ArrowVortex no permite moverla).
 - ✅ Propiedades de la canción con editor de los demás tags (los de XSanity/StepF2: `#CATEGORY`, `#SONGTYPE`…).
 - ✅ Charts co-op nuevos con número de jugadores (`#PLAYERS`), y deshacer para propiedades, charts nuevos y borrados.
 - ✅ Guardado sin pérdidas: conserva tags desconocidos (`#QUESTMODS`, `#HEARTS`…) y el texto exacto de los charts sin editar.
 - ✅ Verificador de biblioteca: `--check <carpeta>` carga, guarda y vuelve a leer cada simfile.
-- ✅ Opciones de línea de comandos: `--chart`, `--beat`, `--view`, `--select`, `--mirror`, `--tempo`, `--minimap`, `--noteskin`.
+- ✅ Opciones de línea de comandos: `--chart`, `--beat`, `--view`, `--select`, `--mirror`, `--tempo`, `--select-tempo`, `--minimap`, `--noteskin`.
 - ✅ Fuentes del sistema para títulos en coreano, japonés y chino.
 - ✅ Panel con conteo de pasos, saltos, holds, rolls, minas y fakes, y avisos de lectura (colas sin hold, etc.).
 
@@ -228,5 +229,6 @@ Propuestas iniciales (se pueden quitar o reordenar):
 - [x] Nombre del proyecto: Step Charter.
 - [x] Los holds terminan visualmente en el snap donde se colocan (remate centrado en la fila final).
 - [x] Gimmicks visibles en el chart: vista de juego con speeds y scrolls, y zonas de warps, fakes, stops y delays.
+- [x] Seleccionar las cajas de BPM, scrolls, warps… en el notefield para cambiar su valor y copiarlas sin seleccionar las flechas.
 
 _(Se irán agregando aquí a medida que las menciones.)_
