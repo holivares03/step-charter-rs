@@ -6,6 +6,18 @@ Todos los cambios importantes de Step Charter. El formato sigue
 
 ## [Sin publicar]
 
+### Agregado
+- Editor de tempo: sección *StepMania 5* para editar en el cursor compás, ticks, combo,
+  speed (factor, duración y unidad), scroll, fakes y labels.
+- Ctrl+B: cambio de BPM límite con el mismo valor (en el cursor o en los extremos de la
+  selección), para ajustar el tempo sólo en esa zona sin alterar la sincronía.
+- *Tempo → Convertir la selección en stop / en stutter* (el stutter no desfasa lo que sigue).
+- *Tempo → Copiar tempo de la selección / Pegar tempo en el cursor*.
+
+### Cambiado
+- En el editor de tempo, poner en 0 un stop, delay, warp o fake (o vaciar un label) quita el
+  segmento en vez de dejarlo con valor 0.
+
 ## [0.2.0] - 2026-11-27
 
 Edición de notas: convertir tipos, escalar, cambiar de lado, cambiar de jugador e insertar o
